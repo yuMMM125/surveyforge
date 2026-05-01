@@ -1,12 +1,23 @@
-"""Shared pytest fixtures."""
+"""Shared pytest fixtures.
+
+Postgres fixtures (`postgres_url` / `initialized_pool` / `conn`) are at the
+project root rather than under `tests/runtime/` so that `tests/tools/*` (and
+later `tests/agents/*`) can share the same testcontainers Postgres + the
+force-rollback transaction isolation, without copy-pasting.
+"""
 from __future__ import annotations
 
 import os
 from collections.abc import Iterator
 from pathlib import Path
 
+import psycopg
 import pytest
 from dotenv import load_dotenv
+from psycopg_pool import ConnectionPool
+from testcontainers.postgres import PostgresContainer
+
+from surveyforge.runtime.db import init_db
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -40,3 +51,32 @@ def fake_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[str, str]]:
 def has_real_key(name: str) -> bool:
     val = os.environ.get(name, "")
     return bool(val) and not val.startswith("fake-")
+
+
+# ---- testcontainers Postgres fixtures (moved up from tests/runtime/conftest.py
+# so tests/tools/, tests/agents/, etc. can share without duplication) ----
+
+
+@pytest.fixture(scope="session")
+def postgres_url() -> Iterator[str]:
+    with PostgresContainer("postgres:16-alpine") as pg:
+        # `driver=None` returns plain `postgresql://...` (what psycopg3 wants).
+        # The `driver="psycopg"` form returns SQLAlchemy's `postgresql+psycopg://...`
+        # URL scheme, which `psycopg.connect` / `ConnectionPool` reject.
+        yield pg.get_connection_url(driver=None)
+
+
+@pytest.fixture(scope="session")
+def initialized_pool(postgres_url: str) -> Iterator[ConnectionPool]:
+    pool = ConnectionPool(postgres_url, min_size=1, max_size=2, open=True)
+    with pool.connection() as conn, conn.transaction():
+        init_db(conn)
+    yield pool
+    pool.close()
+
+
+@pytest.fixture
+def conn(initialized_pool: ConnectionPool) -> Iterator[psycopg.Connection]:
+    """Per-test connection: changes roll back at end of test."""
+    with initialized_pool.connection() as c, c.transaction(force_rollback=True):
+        yield c
