@@ -271,3 +271,34 @@ def test_output_validation_failure_logs_schema_invalid(conn: psycopg.Connection)
     assert output is None
     assert cache_hit is False
     assert truncated is False
+
+
+def test_output_hash_is_populated_on_cache_miss(conn: psycopg.Connection):
+    """`output_hash` column must be a SHA-256 hex digest of the stored output
+    on cache-miss invocations — covers the third leg of the cache_hit /
+    output_hash / truncated audit triple."""
+    import hashlib
+    import json
+
+    run_id = _make_run(conn)
+    gw = ToolGateway(conn, run_id)
+    gw.register(_echo_policy(), _echo_impl)
+    gw.call(AgentRole.RESEARCHER_WIDE, "echo", query="hello")
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT output, output_hash FROM tool_calls WHERE run_id = %s",
+            (run_id,),
+        )
+        rows = cur.fetchall()
+    assert len(rows) == 1
+    output, output_hash = rows[0]
+
+    # Hash present, length is SHA-256 hex (64 chars), and matches what
+    # ToolGateway computed from the stored output payload.
+    assert output_hash is not None
+    assert len(output_hash) == 64
+    expected = hashlib.sha256(
+        json.dumps(output, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    ).hexdigest()
+    assert output_hash == expected
