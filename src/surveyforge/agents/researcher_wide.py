@@ -137,6 +137,14 @@ def _extract_paper_ids_from_tool_result(tool_name: str, result: ToolResult) -> s
     (Task 2 polish #2 enforces this). On forced exit we union ALL seen paper_ids
     into deep_read_queue so Deep can decide what to do with them — Wide never
     got the chance to triage.
+
+    Raises ValueError on unknown tool name. Reason: Task 5 (Researcher-Deep)
+    will add `pdf_reader` / `citation_verifier`; if the if-chain isn't extended
+    to cover a new tool, a silent empty-set return would drop paper_ids from
+    seen_paper_ids → deep_read_queue, which is a hard-to-debug correctness bug.
+    The explicit raise surfaces the omission immediately at test/run time.
+    Note: `submit_results` never reaches this function — the agent intercepts it
+    before tool dispatch (see `_react_one_section`).
     """
     output = result.output.model_dump(mode="json")
     if tool_name == "arxiv_search":
@@ -146,7 +154,11 @@ def _extract_paper_ids_from_tool_result(tool_name: str, result: ToolResult) -> s
         return {paper["paper_id"]} if paper and paper.get("paper_id") else set()
     if tool_name == "web_search":
         return {r["paper_id"] for r in output.get("results", []) if r.get("paper_id")}
-    return set()
+    raise ValueError(
+        f"_extract_paper_ids_from_tool_result: unknown tool {tool_name!r}; "
+        "extend the if-chain when adding new tools (e.g., Task 5's pdf_reader / "
+        "citation_verifier) to prevent silent paper_id loss."
+    )
 
 
 def _try_parse_final_output_from_content(content: Any) -> ResearcherWideOutput | None:

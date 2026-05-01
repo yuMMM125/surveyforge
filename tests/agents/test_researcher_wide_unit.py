@@ -583,3 +583,21 @@ def test_submit_tool_name_matches_prompt_completion_tools() -> None:
     registry = PromptRegistry()
     template = registry.load(AgentRole.RESEARCHER_WIDE)
     assert rw_mod.SUBMIT_TOOL_NAME in template.completion_tools
+
+
+def test_extract_paper_ids_raises_on_unknown_tool():
+    """Unknown tool name → ValueError, not silent empty-set fallback.
+
+    Defends against Task 5 (Researcher-Deep) or later additions that bind a
+    new tool but forget to extend `_extract_paper_ids_from_tool_result`'s
+    if-chain. Without this raise, the new tool's results would silently never
+    be added to seen_paper_ids → deep_read_queue (paper_id loss bug)."""
+    from unittest.mock import MagicMock
+
+    from surveyforge.agents.researcher_wide import _extract_paper_ids_from_tool_result
+
+    fake_result = MagicMock()
+    fake_result.output.model_dump.return_value = {"papers": [{"paper_id": "arxiv:1"}]}
+
+    with pytest.raises(ValueError, match="unknown tool"):
+        _extract_paper_ids_from_tool_result("future_tool_not_in_chain", fake_result)
