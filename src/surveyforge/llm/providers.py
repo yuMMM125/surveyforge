@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
+from typing import Any
 
 from langchain_openai import ChatOpenAI
+from pydantic import SecretStr
 
 
-class ProviderName(str, Enum):
+class ProviderName(StrEnum):
     DEEPSEEK = "deepseek"
     GLM = "glm"
     MINIMAX = "minimax"
@@ -79,7 +81,7 @@ def build_chat_model(
     *,
     temperature: float = 0.0,
     max_tokens: int | None = None,
-    **kwargs: object,
+    **kwargs: Any,
 ) -> ChatOpenAI:
     """Build a ChatOpenAI client for any of the four providers.
 
@@ -90,8 +92,8 @@ def build_chat_model(
     return ChatOpenAI(
         model=model or cfg.default_model,
         base_url=cfg.base_url,
-        api_key=api_key,  # type: ignore[arg-type]
+        api_key=SecretStr(api_key),
         temperature=temperature,
         max_tokens=max_tokens,  # type: ignore[call-arg]
-        **kwargs,  # type: ignore[arg-type]
+        **kwargs,
     )

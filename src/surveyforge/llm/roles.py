@@ -1,10 +1,10 @@
 """Agent roles served by the LLMRouter (10 roles per spec § 2.1)."""
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 
 
-class AgentRole(str, Enum):
+class AgentRole(StrEnum):
     PLANNER = "planner"
     RESEARCHER_WIDE = "researcher_wide"
     RESEARCHER_DEEP = "researcher_deep"
