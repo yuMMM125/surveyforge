@@ -7,6 +7,7 @@ the registered policy uses real Pydantic schemas (replacing the placeholder
 """
 from __future__ import annotations
 
+import re
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from typing import Any
@@ -18,11 +19,25 @@ from surveyforge.llm.roles import AgentRole
 from surveyforge.runtime.tool_gateway import ToolGateway, ToolPolicy
 from surveyforge.schemas.paper_id import PaperId
 
-ARXIV_API_URL = "http://export.arxiv.org/api/query"
+ARXIV_API_URL = "https://export.arxiv.org/api/query"
 TOOL_NAME = "arxiv_search"
 TOOL_VERSION = "0.1.0"
 
 _ATOM_NS = {"atom": "http://www.w3.org/2005/Atom"}
+
+_VERSION_SUFFIX_RE = re.compile(r"v\d+$")
+
+
+def _strip_version(arxiv_id: str) -> str:
+    """Strip trailing `vN` from an arxiv id so the canonical paper_id treats
+    versions of the same paper as the same entity.
+
+    `2401.12345v2` → `2401.12345` ; `cs/9901001v1` → `cs/9901001` ; ids without
+    a version suffix pass through unchanged. The raw `arxiv_id` field on
+    `ArxivPaper` keeps the full version-bearing id for traceability — only the
+    canonical `paper_id` (used as evidence_store / dedup key) is stripped.
+    """
+    return _VERSION_SUFFIX_RE.sub("", arxiv_id)
 
 
 class ArxivSearchInput(BaseModel):
@@ -80,7 +95,7 @@ def _parse_atom_feed(xml_content: str) -> list[dict[str, Any]]:
             continue
         arxiv_id = id_elem.text.rsplit("/", 1)[-1]
         papers.append({
-            "paper_id": f"arxiv:{arxiv_id}",  # canonical prefix-form for downstream PaperId contract
+            "paper_id": f"arxiv:{_strip_version(arxiv_id)}",  # canonical: version-stripped, so v1/v2 of same paper dedup
             "arxiv_id": arxiv_id,
             "title": (title_elem.text or "").strip() if title_elem is not None else "",
             "authors": authors,

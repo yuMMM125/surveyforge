@@ -70,13 +70,54 @@ def test_arxiv_search_impl_parses_atom_feed_into_papers(respx_mock):
     result = arxiv_search.search_papers(query="LLM agents", max_results=10)
     assert len(result["papers"]) == 2
     p1 = result["papers"][0]
-    assert p1["paper_id"] == "arxiv:2401.12345v1"  # canonical prefix form for downstream
-    assert p1["arxiv_id"] == "2401.12345v1"
+    assert p1["paper_id"] == "arxiv:2401.12345"   # canonical: version stripped for dedup
+    assert p1["arxiv_id"] == "2401.12345v1"        # raw: keeps version for traceability
     assert p1["title"] == "A Test Paper About LLM Agents"
     assert p1["authors"] == ["Alice Researcher", "Bob Coauthor"]
     assert "test abstract" in p1["abstract"]
     assert p1["categories"] == ["cs.LG", "cs.AI"]
     assert p1["pdf_url"] == "http://arxiv.org/pdf/2401.12345v1"
+
+
+def test_arxiv_search_paper_id_strips_version_suffix(respx_mock):
+    """Same paper at different versions (v1, v2, v3) must dedup to the same
+    canonical paper_id. The raw `arxiv_id` field keeps the version-bearing
+    id for traceability."""
+    multi_version_feed = """<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <id>http://arxiv.org/abs/2401.12345v1</id>
+    <updated>2024-01-15T00:00:00Z</updated>
+    <published>2024-01-15T00:00:00Z</published>
+    <title>Paper v1</title>
+    <summary>v1 abstract.</summary>
+    <author><name>Alice</name></author>
+    <link rel="related" type="application/pdf" href="http://arxiv.org/pdf/2401.12345v1"/>
+    <category term="cs.LG"/>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2401.12345v3</id>
+    <updated>2024-03-20T00:00:00Z</updated>
+    <published>2024-03-20T00:00:00Z</published>
+    <title>Paper v3</title>
+    <summary>v3 abstract.</summary>
+    <author><name>Alice</name></author>
+    <link rel="related" type="application/pdf" href="http://arxiv.org/pdf/2401.12345v3"/>
+    <category term="cs.LG"/>
+  </entry>
+</feed>
+"""
+    respx_mock.get(arxiv_search.ARXIV_API_URL).mock(
+        return_value=httpx.Response(200, content=multi_version_feed)
+    )
+    result = arxiv_search.search_papers(query="x", max_results=10)
+    assert len(result["papers"]) == 2
+    # Both versions canonicalize to the same paper_id (dedup-friendly)
+    assert result["papers"][0]["paper_id"] == "arxiv:2401.12345"
+    assert result["papers"][1]["paper_id"] == "arxiv:2401.12345"
+    # But raw arxiv_id preserves the version (traceability)
+    assert result["papers"][0]["arxiv_id"] == "2401.12345v1"
+    assert result["papers"][1]["arxiv_id"] == "2401.12345v3"
 
 
 def test_arxiv_search_max_results_field_bounds(respx_mock):
@@ -193,16 +234,26 @@ def test_s2_lookup_through_gateway_logs_tool_call(conn: psycopg.Connection, resp
 def test_s2_lookup_paper_id_only_accepts_arxiv_or_s2_prefix(respx_mock):
     """`s2_lookup` accepts arxiv: / s2: only; bare ids, doi:, web: all rejected.
 
-    Keeping the namespace tight matches global PaperId contract (`schemas/paper_id.py`)
-    — if W3+ needs DOI lookup, add a separate `lookup_paper_by_doi` function.
+    Layered validation:
+    - `PaperId` (Annotated, runs first) rejects: missing prefix, empty suffix
+    - `field_validator` (runs second) rejects: web: prefix (PaperId allows it
+      but S2 API doesn't support web-indexed lookups)
     """
     from pydantic import ValidationError
+    # PaperId layer: missing prefix
     with pytest.raises(ValidationError):
-        s2_lookup.lookup_paper(paper_id="2401.12345")  # no prefix
+        s2_lookup.lookup_paper(paper_id="2401.12345")
+    # PaperId layer: empty/whitespace suffix
     with pytest.raises(ValidationError):
-        s2_lookup.lookup_paper(paper_id="doi:10.0000/test")  # doi: not supported
+        s2_lookup.lookup_paper(paper_id="arxiv:")  # empty suffix
     with pytest.raises(ValidationError):
-        s2_lookup.lookup_paper(paper_id="web:abc123")  # web: not supported (S2 isn't web-indexed)
+        s2_lookup.lookup_paper(paper_id="s2:   ")  # whitespace-only suffix
+    # PaperId layer: doi: not in valid prefixes
+    with pytest.raises(ValidationError):
+        s2_lookup.lookup_paper(paper_id="doi:10.0000/test")
+    # field_validator layer: web: allowed by PaperId but S2 doesn't index web
+    with pytest.raises(ValidationError):
+        s2_lookup.lookup_paper(paper_id="web:abc123")
 
 
 # ---- web_search ----

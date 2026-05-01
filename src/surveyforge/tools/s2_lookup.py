@@ -29,13 +29,20 @@ class S2LookupInput(BaseModel):
     global PaperId contract (`schemas/paper_id.py`) doesn't support DOI as a
     paper-id prefix. If W3+ needs DOI lookup, add a separate `doi: str | None`
     field rather than overloading `paper_id`.
+
+    Layered validation: the `PaperId` Annotated validator (from
+    `surveyforge.schemas.paper_id`) runs first — it enforces prefix-form +
+    rejects empty/whitespace-only suffix. Then the `field_validator` below
+    further restricts the supported prefixes to arxiv:/s2: (rejecting web:).
     """
 
-    paper_id: str
+    paper_id: PaperId
 
     @field_validator("paper_id")
     @classmethod
-    def _has_supported_prefix(cls, v: str) -> str:
+    def _restrict_to_s2_supported_prefixes(cls, v: str) -> str:
+        # PaperId already validated prefix-and-non-empty-suffix; this layer
+        # narrows further to arxiv:/s2: (S2 API doesn't accept web: lookups).
         if not (v.startswith("arxiv:") or v.startswith("s2:")):
             raise ValueError(
                 f"s2_lookup paper_id must start with arxiv: or s2:, got {v!r}"
