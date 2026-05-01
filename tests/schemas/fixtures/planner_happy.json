@@ -1,0 +1,29 @@
+{
+  "topic": "Survey of RLHF progress",
+  "sections": [
+    {
+      "section_id": "S1",
+      "title": "Background",
+      "research_questions": [
+        "What is RLHF?",
+        "What problem does it solve?"
+      ],
+      "must_find_evidence": [
+        "Original RLHF paper (Christiano et al. 2017)",
+        "Definition of preference learning"
+      ]
+    },
+    {
+      "section_id": "S2",
+      "title": "Methods",
+      "research_questions": [
+        "What are the main RLHF training methods?"
+      ],
+      "must_find_evidence": [
+        "PPO-based RLHF (InstructGPT 2022)",
+        "DPO (Rafailov et al. 2023)"
+      ]
+    }
+  ],
+  "rationale": "Two sections cover background + methods for a focused W2 demo."
+}

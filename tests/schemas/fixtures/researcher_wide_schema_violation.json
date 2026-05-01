@@ -1,0 +1,14 @@
+{
+  "section_id": "S1",
+  "query": "RLHF preference learning",
+  "candidate_papers": [
+    {
+      "paper_id": "arxiv:1706.03741",
+      "title": "Deep Reinforcement Learning from Human Preferences",
+      "source": "patent",
+      "why_relevant": "Original RLHF paper.",
+      "handoff_to_deep": true
+    }
+  ],
+  "notes": "Found 1 paper; source 'patent' is invalid (must be arxiv/s2/web)."
+}
