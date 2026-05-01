@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 import yaml
 from langchain_openai import ChatOpenAI
@@ -32,6 +32,22 @@ class RoleBinding:
         if self.supports_fc is not None:
             return self.supports_fc
         return PROVIDERS[self.provider].supports_function_calling
+
+
+@runtime_checkable
+class RouterProtocol(Protocol):
+    """Structural typing contract for objects that route AgentRole → ChatOpenAI.
+
+    Both `LLMRouter` (this module) and `RateLimitedRouter` (rate_limit.py)
+    satisfy this protocol. Agent factory functions like `make_planner_node`
+    type-annotate their `router` parameter as `RouterProtocol` so production
+    code can pass `RateLimitedRouter` (gets rate-limit callbacks attached
+    to every LLM invoke) without forcing tests to also build the limiter
+    config — bare `LLMRouter` is a valid stand-in for unit tests.
+    """
+
+    def get_llm(self, role: AgentRole, **kwargs: Any) -> ChatOpenAI: ...
+    def binding(self, role: AgentRole) -> RoleBinding: ...
 
 
 class LLMRouter:

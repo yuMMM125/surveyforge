@@ -154,6 +154,15 @@ class RateLimitedRouter:
                 self._cache[role] = llm
         return llm
 
+    def binding(self, role: AgentRole) -> RoleBinding:
+        """Return the RoleBinding for a role. Raises KeyError if unconfigured.
+
+        Matches `LLMRouter.binding` so both classes satisfy `RouterProtocol`.
+        """
+        if role not in self._bindings:
+            raise KeyError(f"No binding configured for role: {role.value}")
+        return self._bindings[role]
+
     def _limiter_for(self, provider: ProviderName) -> ProviderRateLimiter:
         with self._dict_lock:
             if provider not in self._limiters:

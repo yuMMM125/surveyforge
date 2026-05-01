@@ -173,3 +173,27 @@ def test_planner_node_factory_returns_callable() -> None:
     registry = PromptRegistry()
     node = make_planner_node(router, registry)
     assert callable(node)
+
+
+def test_make_planner_node_accepts_rate_limited_router() -> None:
+    """`make_planner_node` is typed as `RouterProtocol`, so RateLimitedRouter
+    (production-grade with rate-limit callbacks) is structurally accepted
+    alongside bare LLMRouter (used by these unit tests for speed). Without
+    this, production agent code would silently bypass rate limiting and
+    trip SJTU gateway 429 cascades."""
+    from surveyforge.llm.rate_limit import RateLimitConfig, RateLimitedRouter
+
+    router = RateLimitedRouter(
+        bindings={
+            AgentRole.PLANNER: RoleBinding(
+                provider=ProviderName.GLM, model="glm-5.1", temperature=0.0,
+            ),
+        },
+        config=RateLimitConfig(),  # supply valid defaults; adjust if RateLimitConfig has required fields
+    )
+    registry = PromptRegistry()
+    node = make_planner_node(router, registry)
+    assert callable(node)
+    # Bonus: verify the structural protocol holds at runtime
+    from surveyforge.llm.router import RouterProtocol
+    assert isinstance(router, RouterProtocol)

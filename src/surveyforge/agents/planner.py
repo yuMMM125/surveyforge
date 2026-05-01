@@ -15,7 +15,7 @@ from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
 
 from surveyforge.llm.roles import AgentRole
-from surveyforge.llm.router import LLMRouter
+from surveyforge.llm.router import RouterProtocol
 from surveyforge.llm.structured_output import structured_call
 from surveyforge.prompts.loader import PromptRegistry
 from surveyforge.runtime.db import transaction
@@ -28,7 +28,7 @@ PlannerNode = Callable[[SurveyState, RunnableConfig], SurveyState]
 
 
 def make_planner_node(
-    router: LLMRouter,
+    router: RouterProtocol,
     registry: PromptRegistry,
 ) -> PlannerNode:
     """Build a Planner node bound to a specific LLMRouter + PromptRegistry.
