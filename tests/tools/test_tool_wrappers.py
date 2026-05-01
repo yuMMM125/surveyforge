@@ -254,6 +254,28 @@ def test_web_search_num_results_field_bounds():
     web_search.WebSearchInput(query="x", num_results=20)  # ok
 
 
+def test_web_search_skips_linkless_results(respx_mock, monkeypatch):
+    """Serper occasionally returns results without a `link` field (or empty link).
+    `search_web` must filter these out — without the filter, `_url_to_paper_id("")`
+    returns a deterministic `web:e3b0c442...` paper_id shared by every linkless
+    result across all runs, which would pollute the dedup space."""
+    monkeypatch.setenv("SERPER_API_KEY", "test-key-not-real")
+    fixture_with_linkless = {
+        "organic": [
+            {"title": "Has link", "link": "https://example.com/1", "snippet": "ok", "position": 1},
+            {"title": "No link", "snippet": "missing link key", "position": 2},     # missing 'link'
+            {"title": "Empty link", "link": "", "snippet": "empty value", "position": 3},  # empty string
+            {"title": "Has link 2", "link": "https://example.com/2", "snippet": "ok", "position": 4},
+        ]
+    }
+    respx_mock.post(web_search.SERPER_API_URL).mock(
+        return_value=httpx.Response(200, json=fixture_with_linkless)
+    )
+    result = web_search.search_web(query="x", num_results=5)
+    titles = [r["title"] for r in result["results"]]
+    assert titles == ["Has link", "Has link 2"]  # linkless entries skipped
+
+
 def test_web_search_missing_api_key_raises_runtime_error(respx_mock, monkeypatch):
     """SERPER_API_KEY env var is required; missing → loud failure with actionable message."""
     monkeypatch.delenv("SERPER_API_KEY", raising=False)

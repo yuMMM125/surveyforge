@@ -25,7 +25,23 @@ TOOL_VERSION = "0.1.0"
 
 
 def _url_to_paper_id(url: str) -> str:
-    """Stable `web:<hash>` paper_id derived from URL (16 hex = 64 bits — plenty for dedup)."""
+    """Stable `web:<hash>` paper_id derived from URL (16 hex = 64-bit dedup space).
+
+    Contract: URL string equality IS the dedup contract — same URL string
+    always produces the same paper_id. This function does NOT normalize URLs
+    (no trailing-slash trimming, no UTM/tracking-param stripping). Downstream
+    consumers that need cross-call dedup are responsible for canonicalizing
+    URLs before passing them in. W3 may add normalization here when cross-call
+    dedup matters; W2's primary use case (within-Serper-response dedup) is
+    fine because Serper returns one canonical link per organic result.
+
+    Empty strings are an invalid input — call sites must filter linkless
+    results before invoking this helper. `search_web` does this at the
+    result-comprehension level.
+
+    Birthday-collision boundary at ~4 billion distinct URLs, far beyond
+    W2's expected scale (10s-100s of papers per run).
+    """
     return f"web:{hashlib.sha256(url.encode('utf-8')).hexdigest()[:16]}"
 
 
@@ -74,13 +90,17 @@ def search_web(query: str, num_results: int = 5) -> dict[str, Any]:
     return {
         "results": [
             {
-                "paper_id": _url_to_paper_id(r.get("link", "")),
+                "paper_id": _url_to_paper_id(r["link"]),  # safe after filter below
                 "title": r.get("title", ""),
-                "url": r.get("link", ""),
+                "url": r["link"],
                 "snippet": r.get("snippet", ""),
                 "position": r.get("position"),
             }
+            # Skip linkless results — without this, _url_to_paper_id("") would
+            # produce a deterministic web:e3b0c442... collision id shared by every
+            # linkless result across runs, polluting cache + dedup.
             for r in data.get("organic", [])
+            if r.get("link")
         ]
     }
 

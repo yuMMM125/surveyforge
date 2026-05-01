@@ -8,6 +8,7 @@ the registered policy uses real Pydantic schemas (replacing the placeholder
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
+from datetime import datetime
 from typing import Any
 
 import httpx
@@ -45,12 +46,7 @@ class ArxivPaper(BaseModel):
     title: str
     authors: list[str]
     abstract: str
-    # ISO-8601 string from the Atom feed (e.g. "2024-01-15T00:00:00Z"). Kept as
-    # a `str` rather than `datetime` because the ToolGateway's `tool_calls`
-    # cache layer JSON-encodes outputs verbatim (see `_record_call`), and a
-    # bare `datetime` is not JSON-serializable. Downstream consumers parse on
-    # demand if they need a real date object.
-    published: str
+    published: datetime  # ISO-8601 from Atom <published>; Pydantic parses the string emitted by _parse_atom_feed
     categories: list[str]
     pdf_url: str | None
 
