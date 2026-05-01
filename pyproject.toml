@@ -60,5 +60,7 @@ files = ["src/surveyforge"]
 
 [dependency-groups]
 dev = [
+    "mypy>=1.20.2",
+    "types-jsonschema>=4.23.0.20241208",
     "types-pyyaml>=6.0.12.20260408",
 ]
