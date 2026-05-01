@@ -37,3 +37,18 @@ def test_deepseek_tool_call_path(skip_if_no_key):
     )
     # Either returns a tool call, or content mentioning the city.
     assert resp.tool_calls or "tokyo" in resp.content.lower()
+
+
+def test_deepseek_traced_completion(skip_if_no_key):
+    """Smoke test: when Langfuse is configured, callback is attached."""
+    from surveyforge.llm.observability import get_callback_handler
+
+    llm = build_chat_model(ProviderName.DEEPSEEK)
+    handler = get_callback_handler()
+    callbacks = [handler] if handler else []
+
+    resp = llm.invoke(
+        [HumanMessage(content="Say only the word: ack")],
+        config={"callbacks": callbacks},
+    )
+    assert "ack" in resp.content.lower()

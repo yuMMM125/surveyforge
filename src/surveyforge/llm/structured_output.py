@@ -106,7 +106,8 @@ def structured_call(
     last_error: str = "no candidate JSON found"
 
     for attempt in range(max_retries + 1):
-        resp: AIMessage = invoker.invoke(attempt_messages)
+        resp = invoker.invoke(attempt_messages)
+        assert isinstance(resp, AIMessage)
 
         candidate: Any | None = None
         if supports_fc:

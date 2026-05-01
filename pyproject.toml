@@ -6,7 +6,8 @@ requires-python = ">=3.11"
 readme = "README.md"
 license = { text = "Apache-2.0" }
 dependencies = [
-    "langchain-core>=0.3",
+    "langchain>=0.3,<1",
+    "langchain-core>=0.3,<1",
     "langchain-openai>=0.2",
     "langgraph>=0.2",
     "pydantic>=2.5",
