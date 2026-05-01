@@ -188,3 +188,65 @@ def test_role_mismatch_in_front_matter_raises(tmp_path: Path):
     reg = PromptRegistry(prompts_dir=tmp_path)
     with pytest.raises(PromptContractError, match="declares role"):
         reg.load(AgentRole.PLANNER)
+
+
+def test_missing_shared_include_file_raises(tmp_path: Path):
+    """Body uses `<<missing>>` but shared/missing.md doesn't exist."""
+    bad = tmp_path / "planner.md"
+    bad.write_text(
+        "---\n"
+        "role: planner\n"
+        "version: 0.1.0\n"
+        "schema: PlannerOutput\n"
+        "allowed_tools: []\n"
+        "forbidden: []\n"
+        "---\n"
+        "Body with <<does_not_exist>>.\n",
+        encoding="utf-8",
+    )
+    reg = PromptRegistry(prompts_dir=tmp_path)
+    with pytest.raises(PromptContractError, match="does_not_exist"):
+        reg.load(AgentRole.PLANNER)
+
+
+def test_recursive_shared_include_rejected(tmp_path: Path):
+    """A shared file containing another `<<...>>` would yield a recursive include
+    after substitution. The residual-include check (one-pass substitution) must
+    reject it rather than silently leaving an unsubstituted placeholder."""
+    (tmp_path / "shared").mkdir()
+    (tmp_path / "shared" / "outer.md").write_text("inner: <<inner>>", encoding="utf-8")
+    (tmp_path / "shared" / "inner.md").write_text("inner content", encoding="utf-8")
+    bad = tmp_path / "planner.md"
+    bad.write_text(
+        "---\n"
+        "role: planner\n"
+        "version: 0.1.0\n"
+        "schema: PlannerOutput\n"
+        "allowed_tools: []\n"
+        "forbidden: []\n"
+        "---\n"
+        "Body with <<outer>>.\n",
+        encoding="utf-8",
+    )
+    reg = PromptRegistry(prompts_dir=tmp_path)
+    with pytest.raises(PromptContractError, match="unsubstituted"):
+        reg.load(AgentRole.PLANNER)
+
+
+def test_non_identifier_format_placeholder_rejected(tmp_path: Path):
+    """JSON-like literal braces in body must be rejected at load time, not at runtime."""
+    bad = tmp_path / "planner.md"
+    bad.write_text(
+        "---\n"
+        "role: planner\n"
+        "version: 0.1.0\n"
+        "schema: PlannerOutput\n"
+        "allowed_tools: []\n"
+        "forbidden: []\n"
+        "---\n"
+        'Body with literal JSON: {"claim": "x"}.\n',
+        encoding="utf-8",
+    )
+    reg = PromptRegistry(prompts_dir=tmp_path)
+    with pytest.raises(PromptContractError, match="non-identifier format placeholder"):
+        reg.load(AgentRole.PLANNER)

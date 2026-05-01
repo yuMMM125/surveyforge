@@ -11,11 +11,14 @@ role / version / schema / allowed_tools / forbidden. The registry validates:
 5. body has no TODO / FIXME / <placeholder>
 6. citation-emitting roles include the shared Citation Rules block via
    `<<citation_rules>>` placeholder, which is substituted at load time
+7. body uses only `{identifier}` runtime placeholders; literal braces must be
+   escaped as `{{`/`}}` so `PromptTemplate.format(...)` cannot KeyError at runtime
 """
 from __future__ import annotations
 
 import importlib
 import re
+import string
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -116,6 +119,12 @@ class PromptRegistry:
                 raise PromptContractError(
                     f"{role.value}: front-matter missing field {required!r}"
                 )
+        # Empty YAML lists (`allowed_tools:`, `forbidden:` with no value) parse as None.
+        # Treat them as [] so downstream set/tuple ops don't raise a raw TypeError.
+        if meta["allowed_tools"] is None:
+            meta["allowed_tools"] = []
+        if meta["forbidden"] is None:
+            meta["forbidden"] = []
         if meta["role"] != role.value:
             raise PromptContractError(
                 f"{role.value}: front-matter declares role={meta['role']!r}, "
@@ -159,6 +168,8 @@ class PromptRegistry:
                 f"{role.value}: body still has unsubstituted <<...>> include after processing"
             )
 
+        self._validate_format_braces(body, role)
+
         if role in CITATION_EMITTING_ROLES and "Citation Rules" not in body:
             raise PromptContractError(
                 f"{role.value}: citation-emitting role missing 'Citation Rules' content "
@@ -176,6 +187,29 @@ class PromptRegistry:
         )
         self._cache[role] = template
         return template
+
+    @staticmethod
+    def _validate_format_braces(body: str, role: AgentRole) -> None:
+        """Reject literal `{...}` that aren't valid runtime placeholders.
+
+        Without this, a JSON snippet inside a shared rule file (e.g.
+        `{"claim": "x"}`) silently passes load-time validation and explodes
+        inside `PromptTemplate.format(...)` at runtime. Catching it here pins
+        the contract: prompt bodies use only `{identifier}` placeholders;
+        literal braces must be escaped as `{{` and `}}`.
+        """
+        try:
+            parts = list(string.Formatter().parse(body))
+        except ValueError as exc:
+            raise PromptContractError(
+                f"{role.value}: body has malformed format-string braces: {exc}"
+            ) from exc
+        for _literal, field_name, _spec, _conv in parts:
+            if field_name is not None and not field_name.isidentifier():
+                raise PromptContractError(
+                    f"{role.value}: body has non-identifier format placeholder "
+                    f"{field_name!r}; literal braces must be escaped as `{{` and `}}`"
+                )
 
     def _split_front_matter(self, text: str, role: AgentRole) -> tuple[str, str]:
         """Parse Markdown YAML front-matter form: ``---\\n<yaml>\\n---\\n<body>``."""
