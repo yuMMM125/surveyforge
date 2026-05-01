@@ -82,6 +82,11 @@ class RateLimitCallback(BaseCallbackHandler):
 
     raise_error = True  # propagate exceptions from the limiter
 
+    # NOTE: acquire() uses time.sleep() which blocks the calling thread/event loop.
+    # For .ainvoke()/.astream() under high concurrency, this serializes async calls
+    # on the loop. Acceptable for the single-agent pipeline; if W2+ fanout introduces
+    # parallel async dispatch, replace with asyncio.sleep + an async-aware bucket.
+
     def __init__(self, limiter: ProviderRateLimiter) -> None:
         super().__init__()
         self._limiter = limiter
@@ -109,6 +114,10 @@ class RateLimitedRouter:
         self._config = config
         self._limiters: dict[ProviderName, ProviderRateLimiter] = {}
         self._cache: dict[AgentRole, ChatOpenAI] = {}
+        # Guards _limiters / _cache against concurrent get_llm() calls (e.g. when a
+        # future Researcher-Wide fanout uses ThreadPoolExecutor). ProviderRateLimiter
+        # itself is thread-safe; this lock only protects the registry-construction race.
+        self._dict_lock = threading.Lock()
 
     @classmethod
     def from_yaml(
@@ -121,8 +130,9 @@ class RateLimitedRouter:
             raise KeyError(f"No binding configured for role: {role.value}")
 
         is_overridden = bool(kwargs)
-        if not is_overridden and role in self._cache:
-            return self._cache[role]
+        with self._dict_lock:
+            if not is_overridden and role in self._cache:
+                return self._cache[role]
 
         binding = self._bindings[role]
         limiter = self._limiter_for(binding.provider)
@@ -140,13 +150,15 @@ class RateLimitedRouter:
         )
 
         if not is_overridden:
-            self._cache[role] = llm
+            with self._dict_lock:
+                self._cache[role] = llm
         return llm
 
     def _limiter_for(self, provider: ProviderName) -> ProviderRateLimiter:
-        if provider not in self._limiters:
-            rpm, burst = self._config.get(provider)
-            self._limiters[provider] = ProviderRateLimiter(
-                rpm, burst, provider=provider
-            )
-        return self._limiters[provider]
+        with self._dict_lock:
+            if provider not in self._limiters:
+                rpm, burst = self._config.get(provider)
+                self._limiters[provider] = ProviderRateLimiter(
+                    rpm, burst, provider=provider
+                )
+            return self._limiters[provider]
