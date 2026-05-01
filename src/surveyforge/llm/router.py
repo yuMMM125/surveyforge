@@ -51,6 +51,19 @@ class LLMRouter:
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> ChatOpenAI:
+        """Resolve a role to a ChatOpenAI instance.
+
+        Cache + override contract:
+        - With NO overrides: read-through cache (build on miss, cached forever).
+        - With ANY explicit non-None override (model / temperature / max_tokens / **kwargs):
+          build a fresh instance, return it, and DO NOT touch the cache (no read,
+          no write). The base cached instance is preserved across transient overrides.
+        - Note: passing the same value as the binding's default (e.g. `temperature=0.0`
+          when the binding's default is also 0.0) still counts as an override and
+          triggers a fresh build. Pass no kwargs to get the cached instance.
+
+        Raises KeyError if `role` has no binding configured.
+        """
         if role not in self._bindings:
             raise KeyError(f"No binding configured for role: {role.value}")
 

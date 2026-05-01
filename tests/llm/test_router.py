@@ -56,6 +56,16 @@ def test_router_no_cache_when_overriding(fake_env, basic_bindings):
     assert a is not b
 
 
+def test_router_override_does_not_evict_cached_default(fake_env, basic_bindings):
+    """Transient overrides must not touch the cache — base instance is preserved."""
+    router = LLMRouter(bindings=basic_bindings)
+    a = router.get_llm(AgentRole.PLANNER)
+    _transient = router.get_llm(AgentRole.PLANNER, temperature=0.7)
+    c = router.get_llm(AgentRole.PLANNER)
+    assert a is c, "cached default must survive transient override calls"
+    assert a is not _transient
+
+
 def test_role_binding_fc_falls_back_to_provider_default():
     """When supports_fc is None, fc_enabled() returns the provider-level default."""
     qwen_binding = RoleBinding(provider=ProviderName.QWEN, model="qwen")
