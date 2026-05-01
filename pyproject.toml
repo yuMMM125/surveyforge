@@ -57,3 +57,8 @@ ignore = ["E501"]
 python_version = "3.11"
 strict = true
 files = ["src/surveyforge"]
+
+[dependency-groups]
+dev = [
+    "types-pyyaml>=6.0.12.20260408",
+]

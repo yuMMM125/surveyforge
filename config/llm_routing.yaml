@@ -1,0 +1,65 @@
+# 10-role binding per spec § 2.1 (v2 context-calibrated).
+# All values verified via Phase 0 spike (2026-05-01) — see _private/spikes/provider-compatibility.md.
+# Provider names must match surveyforge.llm.providers.ProviderName.
+# `supports_fc` is optional; omit to inherit provider-level default. Set explicitly
+# only when a binding's model differs in FC capability from its provider default.
+
+planner:
+  provider: glm
+  model: glm-5.1
+  temperature: 0.0
+  notes: "Long-horizon planning; 128K context."
+
+researcher_wide:
+  provider: deepseek
+  model: deepseek-chat
+  temperature: 0.0
+  notes: "32K limit; snippet-level triage; ReAct ≤ 8 turns."
+
+researcher_deep:
+  provider: minimax
+  model: minimax
+  temperature: 0.0
+  notes: "MiniMax-M2.7 alias; 192K; full PDF read + methodology extraction. Use FC, not raw JSON."
+
+synthesizer:
+  provider: glm
+  model: glm-5.1
+  temperature: 0.0
+  notes: "Cross-evidence merge + taxonomy."
+
+writer:
+  provider: minimax
+  model: minimax
+  temperature: 0.3
+  notes: "Long-form drafting; needs slight creativity."
+
+critic_section:
+  provider: glm
+  model: glm-5.1
+  temperature: 0.0
+
+critic_final:
+  provider: minimax
+  model: minimax
+  temperature: 0.0
+  notes: "192K full-survey critique."
+
+judge_default:
+  provider: qwen
+  model: qwen
+  temperature: 0.0
+  notes: "Qwen3.5-27B alias; 256K; FC FAILS via gateway → structured_call uses JSON-content path."
+
+judge_final:
+  provider: glm
+  model: glm-5.1
+  temperature: 0.0
+  notes: "High-stakes gatekeeper before publication."
+
+lite_worker:
+  provider: qwen
+  model: qwen3coder
+  temperature: 0.0
+  supports_fc: true
+  notes: "Qwen3Coder; FC PASSES per spike. Used for high-frequency utility tasks (keyword/metadata extraction, etc.)."

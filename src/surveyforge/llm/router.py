@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
+import yaml
 from langchain_openai import ChatOpenAI
 
 from surveyforge.llm.providers import PROVIDERS, ProviderName, build_chat_model
@@ -41,6 +43,10 @@ class LLMRouter:
     def __init__(self, bindings: dict[AgentRole, RoleBinding]) -> None:
         self._bindings = bindings
         self._cache: dict[AgentRole, ChatOpenAI] = {}
+
+    @classmethod
+    def from_yaml(cls, path: str | Path) -> LLMRouter:
+        return cls(bindings=load_routing_yaml(path))
 
     def get_llm(
         self,
@@ -85,3 +91,30 @@ class LLMRouter:
         if not is_overridden:
             self._cache[role] = llm
         return llm
+
+
+def load_routing_yaml(path: str | Path) -> dict[AgentRole, RoleBinding]:
+    """Parse llm_routing.yaml into RoleBinding objects, validating completeness."""
+    raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError(f"{path}: expected mapping at top level")
+
+    bindings: dict[AgentRole, RoleBinding] = {}
+    valid_roles = {r.value for r in AgentRole}
+    for key, entry in raw.items():
+        if key not in valid_roles:
+            raise ValueError(f"Unknown role in {path}: {key!r}")
+        bindings[AgentRole(key)] = RoleBinding(
+            provider=ProviderName(entry["provider"]),
+            model=entry["model"],
+            temperature=float(entry.get("temperature", 0.0)),
+            max_tokens=entry.get("max_tokens"),
+            supports_fc=entry.get("supports_fc"),  # None if not set → fall back to provider default
+        )
+
+    missing = set(AgentRole) - bindings.keys()
+    if missing:
+        raise ValueError(
+            f"Missing role bindings in {path}: {sorted(r.value for r in missing)}"
+        )
+    return bindings
