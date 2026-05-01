@@ -200,6 +200,7 @@ def _react_one_section(
     messages: list[BaseMessage] = [HumanMessage(content=user_message)]
     total_input_tokens = 0
     seen_paper_ids: set[str] = set()
+    had_section_mismatch = False  # NEW: tracks whether any submit_results had wrong section_id
 
     for turn in range(1, MAX_TURNS_PER_SECTION + 1):
         # Budget check BEFORE invoke — exit early if next turn would overflow
@@ -256,6 +257,7 @@ def _react_one_section(
                     # candidates (would corrupt section_notes). Feed error back
                     # so LLM can re-call with the correct section_id; loop
                     # continues until success or 8-turn cap.
+                    had_section_mismatch = True  # NEW: classify cap-exit as schema_invalid, not context_overflow
                     messages.append(ToolMessage(
                         content=(
                             f"submit_results section_id mismatch: got "
@@ -294,8 +296,12 @@ def _react_one_section(
 
             messages.append(ToolMessage(content=content, tool_call_id=tc_id))
 
-    # Loop exhausted all 8 turns without submit_results -> forced exit
-    return None, CONTEXT_OVERFLOW, seen_paper_ids
+    # Loop exhausted all turns without submit_results. If the cap was driven by
+    # repeated section_id mismatches (LLM contract bug), classify as schema_invalid
+    # so retry routing + observability surface the underlying cause. Otherwise
+    # context_overflow is the right category (LLM ran out of exploration turns).
+    cap_category = "schema_invalid" if had_section_mismatch else CONTEXT_OVERFLOW
+    return None, cap_category, seen_paper_ids
 
 
 def make_researcher_wide_node(

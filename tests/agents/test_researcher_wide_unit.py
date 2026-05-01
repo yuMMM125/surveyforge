@@ -622,10 +622,12 @@ def test_extract_paper_ids_raises_on_unknown_tool():
 def test_wide_node_submit_results_mismatch_continues_loop_then_caps(
     conn: psycopg.Connection, wide_node_factory, patch_agent_transaction
 ):
-    """LLM submits with WRONG section_id — node feeds error back, loop continues
-    until 8-turn cap. Verifies (a) wrong-section candidates do NOT corrupt
-    section_notes for the current section; (b) re-prompt mechanism works
-    (production code appends a ToolMessage error)."""
+    """LLM submits with WRONG section_id repeatedly — node feeds error back,
+    loop continues until 8-turn cap. Cap-exit driven by mismatches is classified
+    as `schema_invalid` (NOT context_overflow), so production observability can
+    distinguish 'LLM has a contract bug' from 'LLM ran out of exploration turns'.
+    Verifies (a) wrong-section candidates do NOT corrupt section_notes for the
+    current section; (b) re-prompt mechanism works; (c) error_category precision."""
     patch_agent_transaction("surveyforge.agents.researcher_wide")
     bad_candidates = [
         {"paper_id": "arxiv:wrong.1", "title": "Wrong section paper", "source": "arxiv",
@@ -654,9 +656,10 @@ def test_wide_node_submit_results_mismatch_continues_loop_then_caps(
     # Forced exit (8-turn cap with no acceptable submit) → context_overflow recorded
     rm = RunManager(conn)
     refreshed = rm.get(run_id)
-    # Either context_overflow or schema_invalid is acceptable depending on which
-    # exit fires first; the load-bearing assertion is "non-None error category set"
-    assert refreshed.error_category in ("context_overflow", "schema_invalid")
+    # Repeated section_id mismatches drive the cap → cap-exit classified as
+    # schema_invalid (Task 4 polish #3). Loose context_overflow OR schema_invalid
+    # would mask whether the contract precision is intact.
+    assert refreshed.error_category == "schema_invalid"
     from surveyforge.runtime.runs import RunStatus
     assert refreshed.status == RunStatus.RUNNING  # non-terminal
 
