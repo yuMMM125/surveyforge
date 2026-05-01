@@ -7,6 +7,7 @@ Local dev uses the Postgres service in `docker-compose.yml`. Tests use
 """
 from __future__ import annotations
 
+import atexit
 import os
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -18,6 +19,11 @@ from psycopg_pool import ConnectionPool
 ENV_DATABASE_URL = "SURVEYFORGE_DATABASE_URL"
 SCHEMA_FILE = Path(__file__).parent / "schema.sql"
 
+# NOTE (Task 6): the global `_pool` is mutated by `get_pool()` and `reset_pool()`
+# without synchronization. Today's single-threaded execution makes this safe;
+# when LangGraph's threaded/async runner lands (Task 6), wrap both functions in
+# a `threading.Lock` to avoid races on first-call construction and concurrent
+# reset.
 _pool: ConnectionPool | None = None
 
 
@@ -45,7 +51,19 @@ def reset_pool() -> None:
 
 
 def init_db(conn: psycopg.Connection) -> None:
-    """Apply schema.sql idempotently. Caller controls transaction scope."""
+    """Apply schema.sql idempotently within the caller's transaction.
+
+    The connection MUST NOT be in autocommit mode — `schema.sql` issues
+    multiple DDL statements, and without an enclosing transaction a
+    mid-script failure leaves the schema half-applied. Wrap the call site
+    in `db.transaction()` (or open `conn.transaction()` manually) before
+    invoking this function.
+    """
+    if conn.autocommit:
+        raise RuntimeError(
+            "init_db requires a non-autocommit connection so multi-statement "
+            "DDL applies atomically. Wrap the call in `db.transaction()`."
+        )
     sql = SCHEMA_FILE.read_text(encoding="utf-8")
     with conn.cursor() as cur:
         cur.execute(sql)
@@ -57,3 +75,9 @@ def transaction() -> Iterator[psycopg.Connection]:
     pool = get_pool()
     with pool.connection() as conn, conn.transaction():
         yield conn
+
+
+# Register cleanup at module import so long-running processes (CLI, server)
+# don't leak a `ConnectionPool` worker thread on interpreter exit. Tests don't
+# rely on this — the conftest fixture closes its own pool explicitly.
+atexit.register(reset_pool)
