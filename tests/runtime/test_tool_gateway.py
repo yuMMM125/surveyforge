@@ -396,3 +396,57 @@ def test_impl_failure_does_not_seed_cache(conn: psycopg.Connection):
     assert n_invocations[0] == 2
     assert res.cache_hit is False
     assert res.output.echoed == "hi"
+
+
+def test_output_schema_with_datetime_field_round_trips_through_gateway(conn: psycopg.Connection):
+    """Regression: tool_gateway.call must handle non-primitive Pydantic field types
+    (datetime, Path, UUID, etc.) by serializing via model_dump(mode='json') so
+    JSONB persistence and cache round-trip work cleanly. Surfaced by Task 2's
+    arxiv_search wanting `published: datetime` and finding json.dumps crashed."""
+    from datetime import UTC, datetime
+
+    from pydantic import BaseModel, ConfigDict
+
+    class _DateInput(BaseModel):
+        ts: datetime
+
+    class _DateOutput(BaseModel):
+        model_config = ConfigDict(frozen=True)
+        echoed_ts: datetime
+        offset_seconds: int
+
+    def date_impl(ts: datetime) -> dict[str, Any]:
+        # Impl receives native datetime (python mode for input_schema model_dump)
+        return {"echoed_ts": ts, "offset_seconds": int(ts.timestamp())}
+
+    policy = ToolPolicy(
+        tool_name="date_echo",
+        tool_version="1.0.0",
+        allowed_roles=(AgentRole.RESEARCHER_WIDE,),
+        input_schema=_DateInput,
+        output_schema=_DateOutput,
+        result_trust="trusted_internal",
+    )
+    run_id = _make_run(conn)
+    gw = ToolGateway(conn, run_id)
+    gw.register(policy, date_impl)
+
+    sample_ts = datetime(2024, 5, 1, 12, 30, 45, tzinfo=UTC)
+
+    # First call (cache miss) — must NOT crash on json.dumps of datetime
+    res1 = gw.call(AgentRole.RESEARCHER_WIDE, "date_echo", ts=sample_ts)
+    assert res1.cache_hit is False
+    assert res1.output.echoed_ts == sample_ts
+    assert res1.output.offset_seconds == int(sample_ts.timestamp())
+
+    # Verify DB row stores datetime as ISO-8601 string in JSONB
+    with conn.cursor() as cur:
+        cur.execute("SELECT output FROM tool_calls WHERE run_id = %s", (run_id,))
+        stored_output = cur.fetchone()[0]
+    assert isinstance(stored_output["echoed_ts"], str)
+    assert "2024-05-01" in stored_output["echoed_ts"]  # ISO-8601 round-trip
+
+    # Second call (cache hit) — output round-trips back to a real datetime
+    res2 = gw.call(AgentRole.RESEARCHER_WIDE, "date_echo", ts=sample_ts)
+    assert res2.cache_hit is True
+    assert res2.output.echoed_ts == sample_ts  # Pydantic parses ISO-8601 back to datetime

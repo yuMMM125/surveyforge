@@ -187,7 +187,7 @@ class ToolGateway:
                 error_category=ErrorCategory.SCHEMA_INVALID.value,
             )
             raise
-        output_payload = validated_out.model_dump()
+        output_payload = validated_out.model_dump(mode="json")
 
         encoded = json.dumps(output_payload, separators=(",", ":"), default=_json_default).encode("utf-8")
         truncated = len(encoded) > policy.max_result_bytes
