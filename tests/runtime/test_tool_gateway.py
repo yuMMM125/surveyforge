@@ -302,3 +302,97 @@ def test_output_hash_is_populated_on_cache_miss(conn: psycopg.Connection):
         json.dumps(output, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
     ).hexdigest()
     assert output_hash == expected
+
+
+def test_impl_failure_with_httpx_5xx_logs_provider_5xx(conn: psycopg.Connection):
+    """impl raising httpx.HTTPStatusError 503 → tool_calls row with error_category='provider_5xx', exception re-raised."""
+    import httpx
+    run_id = _make_run(conn)
+    gw = ToolGateway(conn, run_id)
+    def failing_impl(query: str) -> dict[str, Any]:
+        request = httpx.Request("GET", "https://example.com")
+        response = httpx.Response(503, request=request)
+        raise httpx.HTTPStatusError("upstream down", request=request, response=response)
+    gw.register(_echo_policy(), failing_impl)
+    with pytest.raises(httpx.HTTPStatusError):
+        gw.call(AgentRole.RESEARCHER_WIDE, "echo", query="x")
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT error_category, output, cache_hit, truncated FROM tool_calls "
+            "WHERE run_id = %s",
+            (run_id,),
+        )
+        rows = cur.fetchall()
+    assert len(rows) == 1
+    error_category, output, cache_hit, truncated = rows[0]
+    assert error_category == "provider_5xx"
+    assert output is None
+    assert cache_hit is False
+    assert truncated is False
+
+
+def test_impl_failure_with_httpx_429_logs_provider_429(conn: psycopg.Connection):
+    """impl raising httpx.HTTPStatusError 429 → tool_calls error_category='provider_429'."""
+    import httpx
+    run_id = _make_run(conn)
+    gw = ToolGateway(conn, run_id)
+    def rate_limited_impl(query: str) -> dict[str, Any]:
+        request = httpx.Request("GET", "https://example.com")
+        response = httpx.Response(429, request=request)
+        raise httpx.HTTPStatusError("rate limited", request=request, response=response)
+    gw.register(_echo_policy(), rate_limited_impl)
+    with pytest.raises(httpx.HTTPStatusError):
+        gw.call(AgentRole.RESEARCHER_WIDE, "echo", query="x")
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT error_category FROM tool_calls WHERE run_id = %s",
+            (run_id,),
+        )
+        assert cur.fetchone() == ("provider_429",)
+
+
+def test_impl_failure_with_unmapped_exception_logs_null_error_category(conn: psycopg.Connection):
+    """Unknown exception types (ValueError, RuntimeError, etc.) still get a tool_calls
+    row, but error_category=NULL because classify_exception returned None."""
+    run_id = _make_run(conn)
+    gw = ToolGateway(conn, run_id)
+    def boom_impl(query: str) -> dict[str, Any]:
+        raise ValueError("something unexpected")
+    gw.register(_echo_policy(), boom_impl)
+    with pytest.raises(ValueError, match="something unexpected"):
+        gw.call(AgentRole.RESEARCHER_WIDE, "echo", query="x")
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT error_category, output FROM tool_calls WHERE run_id = %s",
+            (run_id,),
+        )
+        rows = cur.fetchall()
+    assert len(rows) == 1
+    error_category, output = rows[0]
+    assert error_category is None  # classify_exception returned None
+    assert output is None  # impl raised before producing output
+
+
+def test_impl_failure_does_not_seed_cache(conn: psycopg.Connection):
+    """A failed call must not be treated as a cache entry — the next identical
+    call (with a working impl) re-invokes."""
+    import httpx
+    run_id = _make_run(conn)
+    gw = ToolGateway(conn, run_id)
+    n_invocations = [0]
+    def flaky_impl(query: str) -> dict[str, Any]:
+        n_invocations[0] += 1
+        if n_invocations[0] == 1:
+            request = httpx.Request("GET", "https://example.com")
+            response = httpx.Response(503, request=request)
+            raise httpx.HTTPStatusError("first call fails", request=request, response=response)
+        return {"echoed": query, "n_chars": len(query)}
+    gw.register(_echo_policy(), flaky_impl)
+    with pytest.raises(httpx.HTTPStatusError):
+        gw.call(AgentRole.RESEARCHER_WIDE, "echo", query="hi")
+    # Second call must invoke impl (the failed row has error_category set,
+    # which the cache lookup excludes).
+    res = gw.call(AgentRole.RESEARCHER_WIDE, "echo", query="hi")
+    assert n_invocations[0] == 2
+    assert res.cache_hit is False
+    assert res.output.echoed == "hi"

@@ -24,7 +24,7 @@ import psycopg
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from surveyforge.llm.roles import AgentRole
-from surveyforge.runtime.errors import ErrorCategory
+from surveyforge.runtime.errors import ErrorCategory, classify_exception
 
 # Field names whose values must be sanitized out before hashing input args.
 # Match by case-insensitive substring — covers credentials passed through args.
@@ -153,7 +153,23 @@ class ToolGateway:
 
         # Miss — invoke the real implementation
         start = time.perf_counter()
-        raw_output = self._impls[tool_name](**validated_in.model_dump())
+        try:
+            raw_output = self._impls[tool_name](**validated_in.model_dump())
+        except Exception as exc:
+            # Log impl failure to tool_calls so retry routing (spec § 2.7.6) has
+            # an error_category signal. Re-raise unchanged — the gateway's job
+            # is to record + classify, not to decide whether to retry.
+            latency_ms = int((time.perf_counter() - start) * 1000)
+            category = classify_exception(exc)
+            self._record_call(
+                tool_name=tool_name, tool_version=policy.tool_version,
+                agent_role=role, input_hash=input_hash,
+                output=None, output_hash=None,
+                result_trust=policy.result_trust, latency_ms=latency_ms,
+                cache_hit=False, truncated=False,
+                error_category=category.value if category else None,
+            )
+            raise
         latency_ms = int((time.perf_counter() - start) * 1000)
 
         try:
