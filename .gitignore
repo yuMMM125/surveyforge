@@ -85,3 +85,7 @@ cache/
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Local dev DB volume (docker compose)
+postgres_data/
+
