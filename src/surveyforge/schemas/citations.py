@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from surveyforge.schemas._paper_id import PaperId
+from surveyforge.schemas.paper_id import PaperId
 
 
 class Citation(BaseModel):

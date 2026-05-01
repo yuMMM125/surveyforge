@@ -5,7 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-from surveyforge.schemas._paper_id import PaperId
+from surveyforge.schemas.paper_id import PaperId
 
 
 class CandidatePaper(BaseModel):
@@ -50,7 +50,8 @@ class ResearcherWideOutput(BaseModel):
 class EvidenceCard(BaseModel):
     """A single piece of evidence linking a paper to a claim.
 
-    Produced by **Researcher-Deep only** (Wide does not produce these).
+    Producer: Researcher-Deep (sole producer; Wide does not emit EvidenceCard).
+    Consumers: Writer (cites via EvidenceRef), Critic (verifies), Judge (rates).
     """
 
     evidence_id: str
