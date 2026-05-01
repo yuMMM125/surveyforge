@@ -23,7 +23,7 @@ class CandidatePaper(BaseModel):
     handoff_to_deep: bool
 
     @model_validator(mode="after")
-    def _paper_id_prefix_matches_source(self) -> "CandidatePaper":
+    def _paper_id_prefix_matches_source(self) -> CandidatePaper:
         expected = f"{self.source}:"
         if not self.paper_id.startswith(expected):
             raise ValueError(
