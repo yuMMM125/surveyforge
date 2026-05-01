@@ -1,14 +1,14 @@
 """Shared fixtures for tests/agents/.
 
-Agent node closures use `surveyforge.runtime.db.transaction()` to get a
-pooled connection for `RunManager.update_stage(...)`. Unit tests want to
-share the test's force-rollback `conn` fixture so creates + node-side
-reads are visible within the same transaction. We monkeypatch the
-`transaction` symbol imported into agent modules to yield the test's conn.
+The `patch_agent_transaction` factory monkeypatches `transaction()` inside a
+specific agent module so DB writes from the node share the test's force-rollback
+`conn` fixture (rather than opening a new pool connection that bypasses
+isolation). Each agent test file imports this fixture and parametrizes with
+its own module path.
 """
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 
 import psycopg
@@ -16,20 +16,31 @@ import pytest
 
 
 @pytest.fixture
-def patch_planner_transaction(
-    monkeypatch: pytest.MonkeyPatch, conn: psycopg.Connection
-) -> psycopg.Connection:
-    """Make `surveyforge.agents.planner.transaction()` yield the test conn.
+def patch_agent_transaction(
+    monkeypatch: pytest.MonkeyPatch, conn: psycopg.Connection,
+) -> Callable[[str], None]:
+    """Returns a function that patches `<module_path>.transaction` to yield the
+    test's force-rollback `conn`.
 
-    Lets the planner node's `RunManager.update_stage` write inside the
-    test's force-rollback transaction (so creates + reads stay coherent).
+    Usage:
+        def test_x(patch_agent_transaction, conn):
+            patch_agent_transaction("surveyforge.agents.researcher_wide")
+            # ... node call now shares conn's transaction
     """
 
     @contextmanager
-    def _fake_transaction() -> Iterator[psycopg.Connection]:
+    def _yield_conn() -> Iterator[psycopg.Connection]:
         yield conn
 
-    monkeypatch.setattr(
-        "surveyforge.agents.planner.transaction", _fake_transaction
-    )
-    return conn
+    def _patch(module_path: str) -> None:
+        monkeypatch.setattr(f"{module_path}.transaction", _yield_conn)
+
+    return _patch
+
+
+# Backward-compat alias for the existing planner_unit tests.
+@pytest.fixture
+def patch_planner_transaction(
+    patch_agent_transaction: Callable[[str], None],
+) -> None:
+    patch_agent_transaction("surveyforge.agents.planner")

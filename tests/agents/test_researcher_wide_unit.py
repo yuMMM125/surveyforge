@@ -1,0 +1,585 @@
+"""Researcher-Wide ReAct loop unit tests — mocked LLM scripts each turn.
+
+Live integration in tests/agents/integration/test_researcher_wide_live.py.
+"""
+from __future__ import annotations
+
+import json
+from typing import Any
+from unittest.mock import MagicMock
+
+import psycopg
+import pytest
+from langchain_core.messages import AIMessage
+from langchain_core.runnables import RunnableConfig
+
+from surveyforge.agents.researcher_wide import make_researcher_wide_node
+from surveyforge.llm.providers import ProviderName
+from surveyforge.llm.roles import AgentRole
+from surveyforge.llm.router import LLMRouter, RoleBinding
+from surveyforge.prompts.loader import PromptRegistry
+from surveyforge.runtime.budget import BudgetManager, BudgetSpec, OverflowFallback
+from surveyforge.runtime.runs import RunManager, RunStatus
+from surveyforge.schemas.planner import PlannerSection
+from surveyforge.state import make_initial_state
+
+# ---- helpers: scripted LLM responses ----
+
+def _ai_with_tool_call(name: str, args: dict[str, Any], tc_id: str = "tc_1") -> AIMessage:
+    """Build an AIMessage with a single tool_call + minimal usage_metadata."""
+    return AIMessage(
+        content="",
+        tool_calls=[{"name": name, "args": args, "id": tc_id, "type": "tool_call"}],
+        usage_metadata={"input_tokens": 1000, "output_tokens": 200, "total_tokens": 1200},
+    )
+
+
+def _ai_submit(candidate_papers: list[dict[str, Any]], notes: str = "ok") -> AIMessage:
+    """Build an AIMessage where the LLM calls submit_results to end the ReAct loop."""
+    return _ai_with_tool_call(
+        "submit_results",
+        {
+            "section_id": "S1",
+            "query": "test query",
+            "candidate_papers": candidate_papers,
+            "notes": notes,
+        },
+        tc_id="tc_submit",
+    )
+
+
+def _make_run(conn: psycopg.Connection) -> str:
+    rm = RunManager(conn)
+    return rm.create(topic="test", idempotency_key=f"key-{id(conn)}").run_id
+
+
+def _outline_one_section() -> list[dict[str, Any]]:
+    return [
+        PlannerSection(
+            section_id="S1",
+            title="Methods",
+            research_questions=["What methods exist?", "How do they compare?"],
+            must_find_evidence=["Original RLHF paper"],
+        ).model_dump()
+    ]
+
+
+_DEFAULT_TOOL_OUTPUT: dict[str, dict[str, Any]] = {
+    "arxiv_search": {"papers": []},
+    "s2_lookup": {"paper": None},
+    "web_search": {"results": []},
+}
+
+
+@pytest.fixture
+def wide_node_factory(monkeypatch: pytest.MonkeyPatch):
+    """Factory fixture for ResearcherWide node with mocked LLM + fake gateway.
+
+    Returned `make` callable signature:
+        make(scripted, *, fake_tool_output=None) -> (node, gateway_calls)
+
+    Args:
+        scripted: list of AIMessage to feed sequentially as `invoker.invoke` side_effect
+        fake_tool_output: optional `dict[tool_name, output_dict]` per-tool override.
+            Tools not in the dict fall back to `_DEFAULT_TOOL_OUTPUT` empty stubs.
+            Used by forced-exit tests that need the fake gateway to return papers
+            so we can assert seen_paper_ids -> deep_read_queue.
+
+    Returns: (node_callable, gateway_calls_list_for_assertion)
+    """
+    router = LLMRouter({
+        AgentRole.RESEARCHER_WIDE: RoleBinding(
+            provider=ProviderName.DEEPSEEK, model="deepseek-chat", temperature=0.0,
+        ),
+    })
+
+    # Mock LLM with bind_tools returning a chained mock invoker
+    invoker = MagicMock()
+    bound_llm = MagicMock()
+    bound_llm.bind_tools.return_value = invoker
+    monkeypatch.setattr(router, "get_llm", MagicMock(return_value=bound_llm))
+
+    gateway_calls: list[dict[str, Any]] = []
+
+    # `_outputs` is a per-fixture-instance closure; updated by each `make(...)` call
+    # so the same fake gateway can serve different tool-output shapes across tests.
+    _outputs: dict[str, dict[str, Any]] = {}
+
+    def fake_register_wide_tools(gateway: Any) -> None:
+        from unittest.mock import MagicMock as _MM
+
+        def _capture_call(role: AgentRole, tool_name: str, **args: Any) -> Any:
+            gateway_calls.append({"tool_name": tool_name, "args": args})
+            output_dict = _outputs.get(tool_name, _DEFAULT_TOOL_OUTPUT.get(tool_name, {}))
+            mock_result = _MM()
+            mock_result.output.model_dump.return_value = output_dict
+            mock_result.result_trust = (
+                "untrusted_content" if tool_name == "web_search" else "trusted_internal"
+            )
+            return mock_result
+
+        gateway.call = _capture_call
+
+    monkeypatch.setattr(
+        "surveyforge.agents.researcher_wide._register_wide_tools",
+        fake_register_wide_tools,
+    )
+
+    registry = PromptRegistry()
+    budget_manager = BudgetManager()
+
+    def make(
+        scripted: list[AIMessage],
+        *,
+        fake_tool_output: dict[str, dict[str, Any]] | None = None,
+    ) -> tuple[Any, list[dict[str, Any]]]:
+        invoker.invoke.side_effect = list(scripted)
+        _outputs.clear()
+        if fake_tool_output:
+            _outputs.update(fake_tool_output)
+        return make_researcher_wide_node(router, registry, budget_manager), gateway_calls
+
+    return make
+
+
+# ---- normal completion path ----
+
+def test_wide_node_submit_results_populates_section_notes(
+    conn: psycopg.Connection, wide_node_factory: Any, patch_agent_transaction: Any,
+) -> None:
+    patch_agent_transaction("surveyforge.agents.researcher_wide")
+    candidate_papers = [
+        {"paper_id": "arxiv:2401.12345", "title": "Paper 1", "source": "arxiv",
+         "why_relevant": "directly answers RQ1", "handoff_to_deep": False},
+        {"paper_id": "arxiv:2402.99999", "title": "Paper 2", "source": "arxiv",
+         "why_relevant": "ablation results", "handoff_to_deep": True},
+    ]
+    scripted = [_ai_submit(candidate_papers)]
+    node, _ = wide_node_factory(scripted)
+
+    run_id = _make_run(conn)
+    state = make_initial_state(topic="RLHF survey")
+    state["outline"] = _outline_one_section()
+    config: RunnableConfig = {"configurable": {"thread_id": run_id}}
+
+    result = node(state, config)
+
+    assert "S1" in result["section_notes"]
+    assert len(result["section_notes"]["S1"]) == 2
+    # handoff_to_deep=True papers are queued for Deep
+    assert "arxiv:2402.99999" in result["deep_read_queue"]
+    # handoff_to_deep=False paper is NOT queued
+    assert "arxiv:2401.12345" not in result["deep_read_queue"]
+
+
+def test_wide_node_dispatches_tool_call_then_submits(
+    conn: psycopg.Connection, wide_node_factory: Any, patch_agent_transaction: Any,
+) -> None:
+    """Two-turn ReAct: turn 1 calls arxiv_search, turn 2 calls submit_results."""
+    patch_agent_transaction("surveyforge.agents.researcher_wide")
+    scripted = [
+        _ai_with_tool_call("arxiv_search", {"query": "RLHF", "max_results": 5}, tc_id="tc_1"),
+        _ai_submit([
+            {"paper_id": "arxiv:2401.12345", "title": "P", "source": "arxiv",
+             "why_relevant": "x", "handoff_to_deep": True},
+        ]),
+    ]
+    node, gateway_calls = wide_node_factory(scripted)
+
+    run_id = _make_run(conn)
+    state = make_initial_state(topic="x")
+    state["outline"] = _outline_one_section()
+    config: RunnableConfig = {"configurable": {"thread_id": run_id}}
+
+    result = node(state, config)
+
+    assert len(gateway_calls) == 1
+    assert gateway_calls[0]["tool_name"] == "arxiv_search"
+    assert gateway_calls[0]["args"]["query"] == "RLHF"
+    assert "arxiv:2401.12345" in result["deep_read_queue"]
+
+
+# ---- 8-turn hard cap ----
+
+def test_wide_node_8_turn_cap_preserves_seen_paper_ids(
+    conn: psycopg.Connection, wide_node_factory: Any, patch_agent_transaction: Any,
+) -> None:
+    """LLM calls arxiv_search 8 times in a row without submit_results -> cap triggers.
+    Per DoD: ALL seen paper_ids from those 8 turns must end up in deep_read_queue,
+    AND error_category=context_overflow must be recorded (non-terminal — run continues)."""
+    patch_agent_transaction("surveyforge.agents.researcher_wide")
+    scripted = [_ai_with_tool_call("arxiv_search", {"query": f"q{i}"}, tc_id=f"tc_{i}")
+                for i in range(8)]
+    # Each of the 8 arxiv_search calls returns one unique paper
+    node, gateway_calls = wide_node_factory(
+        scripted,
+        fake_tool_output={
+            "arxiv_search": {"papers": [
+                {"paper_id": f"arxiv:2401.0000{i}", "arxiv_id": f"2401.0000{i}", "title": f"P{i}",
+                 "authors": [], "abstract": "", "published": "2024-01-01T00:00:00Z",
+                 "categories": [], "pdf_url": None}
+                for i in range(8)
+            ]},
+        },
+    )
+
+    run_id = _make_run(conn)
+    state = make_initial_state(topic="x")
+    state["outline"] = _outline_one_section()
+    config: RunnableConfig = {"configurable": {"thread_id": run_id}}
+
+    result = node(state, config)
+
+    assert len(gateway_calls) == 8  # all 8 turns dispatched
+    assert result["section_notes"].get("S1", []) == []  # no triaged candidates
+    # All seen paper_ids land in deep_read_queue (the forced-exit hand-off contract)
+    for i in range(8):
+        assert f"arxiv:2401.0000{i}" in result["deep_read_queue"]
+    # error_category recorded, status unchanged
+    rm = RunManager(conn)
+    refreshed = rm.get(run_id)
+    assert refreshed.error_category == "context_overflow"
+    assert refreshed.status == RunStatus.RUNNING
+
+
+# ---- budget overflow ----
+
+def test_wide_node_budget_exceeded_preserves_seen_paper_ids(
+    conn: psycopg.Connection, monkeypatch: pytest.MonkeyPatch,
+    wide_node_factory: Any, patch_agent_transaction: Any,
+) -> None:
+    """When BudgetManager.check raises, loop exits AND all seen paper_ids
+    flow into deep_read_queue (per DoD: forced exit must preserve candidates)."""
+    patch_agent_transaction("surveyforge.agents.researcher_wide")
+    # Override Wide's budget to a tiny number so turn 2's check trips it
+    # (use setitem, NOT setattr — BUDGET_PER_ROLE is a dict, not an object)
+    from surveyforge.runtime import budget as budget_mod
+    monkeypatch.setitem(
+        budget_mod.BUDGET_PER_ROLE,
+        AgentRole.RESEARCHER_WIDE,
+        BudgetSpec(max_input_tokens=100, reserved_output_tokens=50,
+                   fallback=OverflowFallback.SNIPPET_ONLY),
+    )
+
+    # Turn 1: arxiv_search returns 2 papers (both go into seen_paper_ids).
+    # Turn 2: budget check raises before invoke; no submit_results.
+    scripted = [
+        _ai_with_tool_call("arxiv_search", {"query": "x"}, tc_id="tc_1"),
+        _ai_submit([]),  # would run if budget allowed (but won't)
+    ]
+    node, gateway_calls = wide_node_factory(
+        scripted,
+        fake_tool_output={
+            "arxiv_search": {"papers": [
+                {"paper_id": "arxiv:2401.11111", "arxiv_id": "2401.11111", "title": "P1",
+                 "authors": [], "abstract": "", "published": "2024-01-01T00:00:00Z",
+                 "categories": [], "pdf_url": None},
+                {"paper_id": "arxiv:2401.22222", "arxiv_id": "2401.22222", "title": "P2",
+                 "authors": [], "abstract": "", "published": "2024-01-02T00:00:00Z",
+                 "categories": [], "pdf_url": None},
+            ]},
+        },
+    )
+
+    run_id = _make_run(conn)
+    state = make_initial_state(topic="x")
+    state["outline"] = _outline_one_section()
+    config: RunnableConfig = {"configurable": {"thread_id": run_id}}
+
+    result = node(state, config)
+
+    # Only 1 tool dispatch — turn 2 budget check raises BudgetExceeded
+    assert len(gateway_calls) == 1
+    # BOTH paper_ids from turn-1 results land in deep_read_queue (forced exit)
+    assert "arxiv:2401.11111" in result["deep_read_queue"]
+    assert "arxiv:2401.22222" in result["deep_read_queue"]
+
+
+def test_wide_node_overflow_calls_note_error_category(
+    conn: psycopg.Connection, monkeypatch: pytest.MonkeyPatch,
+    wide_node_factory: Any, patch_agent_transaction: Any,
+) -> None:
+    """Forced exit (budget OR turn cap) must call RunManager.note_error_category
+    so observability captures the event without failing the run."""
+    patch_agent_transaction("surveyforge.agents.researcher_wide")
+    from surveyforge.runtime import budget as budget_mod
+    monkeypatch.setitem(
+        budget_mod.BUDGET_PER_ROLE,
+        AgentRole.RESEARCHER_WIDE,
+        BudgetSpec(max_input_tokens=100, reserved_output_tokens=50,
+                   fallback=OverflowFallback.SNIPPET_ONLY),
+    )
+    scripted = [_ai_with_tool_call("arxiv_search", {"query": "x"}, tc_id="tc_1")]
+    node, _ = wide_node_factory(scripted)
+
+    run_id = _make_run(conn)
+    state = make_initial_state(topic="x")
+    state["outline"] = _outline_one_section()
+    config: RunnableConfig = {"configurable": {"thread_id": run_id}}
+    node(state, config)
+
+    # Verify runs.error_category was set without changing status
+    rm = RunManager(conn)
+    refreshed = rm.get(run_id)
+    assert refreshed.error_category == "context_overflow"
+    # status should still be RUNNING (not FAILED — note_error_category is non-terminal)
+    assert refreshed.status == RunStatus.RUNNING
+
+
+# ---- web_search trust wrapping ----
+
+def test_wide_node_wraps_web_search_results_as_untrusted(
+    conn: psycopg.Connection, wide_node_factory: Any, patch_agent_transaction: Any,
+) -> None:
+    """web_search.result_trust=untrusted_content -> ToolMessage content wrapped via trust.wrap_untrusted."""
+    patch_agent_transaction("surveyforge.agents.researcher_wide")
+
+    scripted = [
+        _ai_with_tool_call("web_search", {"query": "untrusted"}, tc_id="tc_1"),
+        _ai_submit([]),
+    ]
+    node, _ = wide_node_factory(scripted)
+
+    import surveyforge.agents.researcher_wide as rw_mod
+    original_wrap = rw_mod.wrap_untrusted
+    wrap_calls: list[dict[str, Any]] = []
+
+    def tracking_wrap(content: str, *, source_tool: str, evidence_id: str) -> str:
+        wrap_calls.append({"source_tool": source_tool, "evidence_id": evidence_id})
+        return original_wrap(content, source_tool=source_tool, evidence_id=evidence_id)
+
+    rw_mod.wrap_untrusted = tracking_wrap  # type: ignore[assignment]
+
+    try:
+        run_id = _make_run(conn)
+        state = make_initial_state(topic="x")
+        state["outline"] = _outline_one_section()
+        config: RunnableConfig = {"configurable": {"thread_id": run_id}}
+        node(state, config)
+
+        # web_search result was wrapped (trusted_internal tools wouldn't be)
+        assert len(wrap_calls) == 1
+        assert wrap_calls[0]["source_tool"] == "web_search"
+        assert wrap_calls[0]["evidence_id"].startswith("E-wide-S1-T")
+    finally:
+        rw_mod.wrap_untrusted = original_wrap  # type: ignore[assignment]
+
+
+# ---- multi-section serial ----
+
+def test_wide_node_processes_all_sections_serially(
+    conn: psycopg.Connection, wide_node_factory: Any, patch_agent_transaction: Any,
+) -> None:
+    """Two sections in outline -> ReAct runs twice, each section gets its own notes."""
+    patch_agent_transaction("surveyforge.agents.researcher_wide")
+    scripted = [
+        # Section 1: directly submit
+        _ai_submit([{"paper_id": "arxiv:1.1", "title": "P1", "source": "arxiv",
+                     "why_relevant": "x", "handoff_to_deep": True}]),
+        # Section 2: directly submit (different paper)
+        _ai_submit([{"paper_id": "arxiv:2.1", "title": "P2", "source": "arxiv",
+                     "why_relevant": "y", "handoff_to_deep": False}]),
+    ]
+    node, _ = wide_node_factory(scripted)
+
+    outline = _outline_one_section()
+    outline.append(PlannerSection(
+        section_id="S2", title="Eval", research_questions=["q1", "q2"],
+        must_find_evidence=["c1"],
+    ).model_dump())
+
+    run_id = _make_run(conn)
+    state = make_initial_state(topic="x")
+    state["outline"] = outline
+    config: RunnableConfig = {"configurable": {"thread_id": run_id}}
+
+    result = node(state, config)
+
+    assert set(result["section_notes"].keys()) == {"S1", "S2"}
+    # Only S1's paper was flagged for deep
+    assert "arxiv:1.1" in result["deep_read_queue"]
+    assert "arxiv:2.1" not in result["deep_read_queue"]
+
+
+# ---- JSON fallback path (Architecture Decision #10) ----
+
+def test_wide_node_json_fallback_when_llm_emits_content_not_tool_call(
+    conn: psycopg.Connection, wide_node_factory: Any, patch_agent_transaction: Any,
+) -> None:
+    """Defense: if LLM returns ResearcherWideOutput JSON in content (no tool_call),
+    parse it as completion rather than treating as forced exit. Handles model-
+    quality drift where LLM ignores the 'always use submit_results' instruction."""
+    patch_agent_transaction("surveyforge.agents.researcher_wide")
+
+    fallback_output = json.dumps({
+        "section_id": "S1",
+        "query": "fallback query",
+        "candidate_papers": [
+            {"paper_id": "arxiv:2401.fallback", "title": "FB", "source": "arxiv",
+             "why_relevant": "x", "handoff_to_deep": True},
+        ],
+        "notes": "model output JSON in content, not tool_call",
+    })
+    # AIMessage with content but NO tool_calls
+    scripted = [AIMessage(
+        content=fallback_output,
+        tool_calls=[],
+        usage_metadata={"input_tokens": 500, "output_tokens": 100, "total_tokens": 600},
+    )]
+    node, _ = wide_node_factory(scripted)
+
+    run_id = _make_run(conn)
+    state = make_initial_state(topic="x")
+    state["outline"] = _outline_one_section()
+    config: RunnableConfig = {"configurable": {"thread_id": run_id}}
+
+    result = node(state, config)
+
+    # Treated as completion, NOT context_overflow
+    assert "arxiv:2401.fallback" in result["deep_read_queue"]
+    rm = RunManager(conn)
+    assert rm.get(run_id).error_category is None  # NOT set
+
+
+def test_wide_node_json_fallback_unparseable_content_treated_as_overflow(
+    conn: psycopg.Connection, wide_node_factory: Any, patch_agent_transaction: Any,
+) -> None:
+    """If content is non-empty but unparseable as ResearcherWideOutput JSON,
+    forced exit with context_overflow."""
+    patch_agent_transaction("surveyforge.agents.researcher_wide")
+    scripted = [AIMessage(
+        content="I think we should use BERT for this task.",  # plain prose, not JSON
+        tool_calls=[],
+        usage_metadata={"input_tokens": 500, "output_tokens": 50, "total_tokens": 550},
+    )]
+    node, _ = wide_node_factory(scripted)
+
+    run_id = _make_run(conn)
+    state = make_initial_state(topic="x")
+    state["outline"] = _outline_one_section()
+    config: RunnableConfig = {"configurable": {"thread_id": run_id}}
+    node(state, config)
+
+    rm = RunManager(conn)
+    assert rm.get(run_id).error_category == "context_overflow"
+
+
+# ---- real ToolGateway integration (not all-fake) ----
+
+def test_wide_node_real_gateway_writes_tool_calls(
+    conn: psycopg.Connection, monkeypatch: pytest.MonkeyPatch,
+    patch_agent_transaction: Any, respx_mock: Any,
+) -> None:
+    """Use the REAL _register_wide_tools (no monkeypatch override) + respx-mocked
+    HTTP. Verify the tool_calls table actually receives a row — proves the
+    gateway integration isn't accidentally bypassed by mocks."""
+    import httpx
+
+    from surveyforge.agents.researcher_wide import make_researcher_wide_node
+    from surveyforge.tools import arxiv_search
+
+    patch_agent_transaction("surveyforge.agents.researcher_wide")
+    monkeypatch.setenv("SERPER_API_KEY", "test-not-used")
+
+    # Mock arxiv API HTTP response (used by the real arxiv_search wrapper)
+    arxiv_atom = """<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <id>http://arxiv.org/abs/2401.99999v1</id>
+    <updated>2024-01-15T00:00:00Z</updated>
+    <published>2024-01-15T00:00:00Z</published>
+    <title>Real Gateway Test Paper</title>
+    <summary>abstract</summary>
+    <author><name>RG Author</name></author>
+    <link rel="related" type="application/pdf" href="http://arxiv.org/pdf/2401.99999v1"/>
+    <category term="cs.LG"/>
+  </entry>
+</feed>
+"""
+    respx_mock.get(arxiv_search.ARXIV_API_URL).mock(
+        return_value=httpx.Response(200, content=arxiv_atom)
+    )
+
+    # Real router with mock LLM (we still mock the LLM so we don't pay for live calls)
+    router = LLMRouter({
+        AgentRole.RESEARCHER_WIDE: RoleBinding(
+            provider=ProviderName.DEEPSEEK, model="deepseek-chat",
+        ),
+    })
+    invoker = MagicMock()
+    bound_llm = MagicMock()
+    bound_llm.bind_tools.return_value = invoker
+    monkeypatch.setattr(router, "get_llm", MagicMock(return_value=bound_llm))
+
+    invoker.invoke.side_effect = [
+        _ai_with_tool_call("arxiv_search", {"query": "real-gw-test", "max_results": 5}, tc_id="tc_real"),
+        _ai_submit([{"paper_id": "arxiv:2401.99999", "title": "Real Gateway Test Paper",
+                     "source": "arxiv", "why_relevant": "test", "handoff_to_deep": True}]),
+    ]
+
+    # NOTE: do NOT monkeypatch _register_wide_tools — let the real one run
+    registry = PromptRegistry()
+    budget_manager = BudgetManager()
+    node = make_researcher_wide_node(router, registry, budget_manager)
+
+    run_id = _make_run(conn)
+    state = make_initial_state(topic="x")
+    state["outline"] = _outline_one_section()
+    config: RunnableConfig = {"configurable": {"thread_id": run_id}}
+    node(state, config)
+
+    # Verify tool_calls row exists with real arxiv_search dispatch
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT tool_name, agent_role, cache_hit, result_trust "
+            "FROM tool_calls WHERE run_id = %s ORDER BY created_at",
+            (run_id,),
+        )
+        rows = cur.fetchall()
+    # Expect at least one arxiv_search row (the real wrapper got dispatched)
+    assert any(r[0] == "arxiv_search" and r[1] == "researcher_wide" for r in rows), (
+        f"arxiv_search tool_call not found in {rows}"
+    )
+
+
+# ---- factory shape ----
+
+def test_make_researcher_wide_node_returns_callable() -> None:
+    router = LLMRouter({
+        AgentRole.RESEARCHER_WIDE: RoleBinding(
+            provider=ProviderName.DEEPSEEK, model="deepseek-chat",
+        ),
+    })
+    registry = PromptRegistry()
+    budget_manager = BudgetManager()
+    node = make_researcher_wide_node(router, registry, budget_manager)
+    assert callable(node)
+
+
+def test_make_researcher_wide_node_accepts_rate_limited_router() -> None:
+    """Same RouterProtocol satisfaction as Task 3 polish — production uses RateLimitedRouter."""
+    from surveyforge.llm.rate_limit import RateLimitConfig, RateLimitedRouter
+    router = RateLimitedRouter(
+        bindings={
+            AgentRole.RESEARCHER_WIDE: RoleBinding(
+                provider=ProviderName.DEEPSEEK, model="deepseek-chat",
+            ),
+        },
+        config=RateLimitConfig(),
+    )
+    registry = PromptRegistry()
+    budget_manager = BudgetManager()
+    node = make_researcher_wide_node(router, registry, budget_manager)
+    assert callable(node)
+
+
+# ---- Step 4.0g: SUBMIT_TOOL_NAME / completion_tools cross-check ----
+
+def test_submit_tool_name_matches_prompt_completion_tools() -> None:
+    """Cross-check: agent's SUBMIT_TOOL_NAME constant must appear in the prompt's
+    `completion_tools` front-matter field. If they drift, prompt + agent are
+    referring to different tool names — silent contract break."""
+    from surveyforge.agents import researcher_wide as rw_mod
+    registry = PromptRegistry()
+    template = registry.load(AgentRole.RESEARCHER_WIDE)
+    assert rw_mod.SUBMIT_TOOL_NAME in template.completion_tools

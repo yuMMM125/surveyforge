@@ -87,6 +87,7 @@ class PromptTemplate:
     schema_class: type[BaseModel]
     allowed_tools: tuple[str, ...]
     forbidden: tuple[str, ...]
+    completion_tools: tuple[str, ...]  # NEW: agent-internal completion signals (Architecture Decision #12)
     body: str
 
     def format(self, **kwargs: Any) -> str:
@@ -148,6 +149,17 @@ class PromptRegistry:
                 f"known: {sorted(KNOWN_TOOLS)}"
             )
 
+        # `completion_tools` is OPTIONAL (W2: only Researcher-Wide uses it; W3+
+        # Synthesizer/Writer may add submit_synthesis / submit_draft etc.).
+        # Deliberately NOT validated against KNOWN_TOOLS — these are agent-
+        # internal completion signals, not gateway-routed tools.
+        completion_tools_raw = meta.get("completion_tools") or []
+        if not isinstance(completion_tools_raw, list):
+            raise PromptContractError(
+                f"{role.value}: `completion_tools` must be a list "
+                f"(got {type(completion_tools_raw).__name__})"
+            )
+
         for match in list(SHARED_INCLUDE_RE.finditer(body)):
             name = match.group(1)
             shared_path = self._dir / "shared" / f"{name}.md"
@@ -183,6 +195,7 @@ class PromptRegistry:
             schema_class=schema_class,
             allowed_tools=tuple(meta["allowed_tools"]),
             forbidden=tuple(meta["forbidden"]),
+            completion_tools=tuple(completion_tools_raw),  # NEW
             body=body,
         )
         self._cache[role] = template

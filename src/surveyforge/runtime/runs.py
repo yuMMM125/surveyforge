@@ -127,6 +127,22 @@ class RunManager:
             if cur.rowcount == 0:
                 raise KeyError(f"run {run_id!r} not found")
 
+    def note_error_category(self, run_id: str, error_category: str) -> None:
+        """Record a non-terminal error_category on the run row.
+
+        Distinct from `fail`: does NOT change `status`. Used for transient/recoverable
+        signals like `context_overflow` (Wide hit budget cap but run continues to Deep)
+        where downstream observability needs to know the event happened, but the run
+        itself isn't dead.
+        """
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "UPDATE runs SET error_category = %s, updated_at = now() WHERE run_id = %s",
+                (error_category, run_id),
+            )
+            if cur.rowcount == 0:
+                raise KeyError(f"run {run_id!r} not found")
+
     def get(self, run_id: str) -> Run:
         with self._conn.cursor() as cur:
             cur.execute(

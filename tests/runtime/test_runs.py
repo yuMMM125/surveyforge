@@ -79,3 +79,21 @@ def test_update_stage_unknown_run_raises_keyerror(conn: psycopg.Connection):
     rm = RunManager(conn)
     with pytest.raises(KeyError):
         rm.update_stage("run_xyz", "planning")
+
+
+def test_note_error_category_sets_column_without_changing_status(conn: psycopg.Connection):
+    """non-terminal error_category setter — status stays at whatever it was."""
+    rm = RunManager(conn)
+    run = rm.create(topic="t", idempotency_key="k1")
+    rm.update_stage(run.run_id, "research_wide")
+    # status is now RUNNING after update_stage
+    rm.note_error_category(run.run_id, "context_overflow")
+    refreshed = rm.get(run.run_id)
+    assert refreshed.error_category == "context_overflow"
+    assert refreshed.status == RunStatus.RUNNING  # NOT flipped to FAILED
+
+
+def test_note_error_category_unknown_run_raises_keyerror(conn: psycopg.Connection):
+    rm = RunManager(conn)
+    with pytest.raises(KeyError, match="run_xyz"):
+        rm.note_error_category("run_xyz", "context_overflow")

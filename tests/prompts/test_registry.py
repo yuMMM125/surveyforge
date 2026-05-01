@@ -44,6 +44,7 @@ def test_planner_front_matter(registry: PromptRegistry):
 
 def test_researcher_wide_front_matter(registry: PromptRegistry):
     rw = registry.load(AgentRole.RESEARCHER_WIDE)
+    assert rw.version == "0.2.0"
     assert rw.schema_class is ResearcherWideOutput
     assert set(rw.allowed_tools) == {"arxiv_search", "s2_lookup", "web_search"}
 
@@ -231,6 +232,22 @@ def test_recursive_shared_include_rejected(tmp_path: Path):
     reg = PromptRegistry(prompts_dir=tmp_path)
     with pytest.raises(PromptContractError, match="unsubstituted"):
         reg.load(AgentRole.PLANNER)
+
+
+def test_researcher_wide_completion_tools(registry: PromptRegistry):
+    """Wide declares submit_results as its agent-internal completion signal —
+    NOT in allowed_tools (would conflate with KNOWN_TOOLS gateway allowlist)."""
+    rw = registry.load(AgentRole.RESEARCHER_WIDE)
+    assert rw.completion_tools == ("submit_results",)
+    # AND submit_results is NOT in allowed_tools (separation of concerns)
+    assert "submit_results" not in rw.allowed_tools
+
+
+def test_completion_tools_defaults_to_empty_tuple(registry: PromptRegistry):
+    """Roles that don't declare `completion_tools` get an empty tuple — Planner
+    has no completion signal (returns final output via structured_call directly)."""
+    p = registry.load(AgentRole.PLANNER)
+    assert p.completion_tools == ()
 
 
 def test_non_identifier_format_placeholder_rejected(tmp_path: Path):
