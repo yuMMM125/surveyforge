@@ -222,10 +222,17 @@ def _react_one_section(
         if not response.tool_calls:
             # JSON fallback: maybe LLM emitted ResearcherWideOutput as plain content
             parsed = _try_parse_final_output_from_content(response.content)
-            if parsed is not None:
+            if parsed is not None and parsed.section_id == section.section_id:
                 return parsed, None, seen_paper_ids
-            # Couldn't recover — forced exit
-            return None, CONTEXT_OVERFLOW, seen_paper_ids
+            # Either unparseable, or parsed but section_id mismatch (no tool_call_id
+            # to feed back; forced exit). schema_invalid more accurate than
+            # context_overflow when the issue is contract violation.
+            error_category = (
+                "schema_invalid"
+                if parsed is not None
+                else CONTEXT_OVERFLOW
+            )
+            return None, error_category, seen_paper_ids
 
         for tool_call in response.tool_calls:
             tool_name = tool_call["name"]
@@ -241,6 +248,20 @@ def _react_one_section(
                     # Don't error_category here; let the loop continue (or hit cap).
                     messages.append(ToolMessage(
                         content=f"submit_results invalid: {exc!s}",
+                        tool_call_id=tc_id,
+                    ))
+                    continue
+                if output.section_id != section.section_id:
+                    # Mismatch: LLM emitted wrong section_id. Don't accept the
+                    # candidates (would corrupt section_notes). Feed error back
+                    # so LLM can re-call with the correct section_id; loop
+                    # continues until success or 8-turn cap.
+                    messages.append(ToolMessage(
+                        content=(
+                            f"submit_results section_id mismatch: got "
+                            f"{output.section_id!r}, expected {section.section_id!r}. "
+                            f"Re-call submit_results with section_id={section.section_id!r}."
+                        ),
                         tool_call_id=tc_id,
                     ))
                     continue
@@ -308,7 +329,7 @@ def make_researcher_wide_node(
 
         new_section_notes: dict[str, list[dict[str, Any]]] = dict(state.get("section_notes", {}))
         new_deep_queue: list[str] = list(state.get("deep_read_queue", []))
-        any_overflow = False
+        last_error_category: str | None = None
 
         for section_dict in outline:
             section = PlannerSection.model_validate(section_dict)
@@ -351,13 +372,15 @@ def make_researcher_wide_node(
                     if pid not in new_deep_queue:
                         new_deep_queue.append(pid)
 
-            if error_category == CONTEXT_OVERFLOW:
-                any_overflow = True
+            if error_category is not None:
+                last_error_category = error_category
 
-        # Record overflow once at the end (non-terminal — run continues to Deep)
-        if any_overflow:
+        # Record any non-terminal error_category once at the end (run continues to Deep).
+        # Both `context_overflow` (budget/turn cap) and `schema_invalid` (JSON-fallback
+        # section_id mismatch) qualify as non-fatal recoverable signals.
+        if last_error_category is not None:
             with transaction() as conn:
-                RunManager(conn).note_error_category(run_id, CONTEXT_OVERFLOW)
+                RunManager(conn).note_error_category(run_id, last_error_category)
 
         return {**state, "section_notes": new_section_notes, "deep_read_queue": new_deep_queue}
 

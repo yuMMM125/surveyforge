@@ -34,17 +34,27 @@ def _ai_with_tool_call(name: str, args: dict[str, Any], tc_id: str = "tc_1") -> 
     )
 
 
-def _ai_submit(candidate_papers: list[dict[str, Any]], notes: str = "ok") -> AIMessage:
-    """Build an AIMessage where the LLM calls submit_results to end the ReAct loop."""
+def _ai_submit(
+    candidate_papers: list[dict[str, Any]],
+    notes: str = "ok",
+    *,
+    section_id: str = "S1",
+) -> AIMessage:
+    """Build an AIMessage where the LLM calls submit_results to end the ReAct loop.
+
+    `section_id` defaults to "S1" for tests using the single-section _outline_one_section()
+    helper. Multi-section tests MUST pass the correct section_id per call to avoid
+    silent contract violations (the production node validates output.section_id ==
+    current PlannerSection.section_id and rejects mismatches)."""
     return _ai_with_tool_call(
         "submit_results",
         {
-            "section_id": "S1",
+            "section_id": section_id,
             "query": "test query",
             "candidate_papers": candidate_papers,
             "notes": notes,
         },
-        tc_id="tc_submit",
+        tc_id=f"tc_submit_{section_id}",
     )
 
 
@@ -373,12 +383,18 @@ def test_wide_node_processes_all_sections_serially(
     """Two sections in outline -> ReAct runs twice, each section gets its own notes."""
     patch_agent_transaction("surveyforge.agents.researcher_wide")
     scripted = [
-        # Section 1: directly submit
-        _ai_submit([{"paper_id": "arxiv:1.1", "title": "P1", "source": "arxiv",
-                     "why_relevant": "x", "handoff_to_deep": True}]),
-        # Section 2: directly submit (different paper)
-        _ai_submit([{"paper_id": "arxiv:2.1", "title": "P2", "source": "arxiv",
-                     "why_relevant": "y", "handoff_to_deep": False}]),
+        # Section 1: directly submit (with correct section_id)
+        _ai_submit(
+            [{"paper_id": "arxiv:1.1", "title": "P1", "source": "arxiv",
+              "why_relevant": "x", "handoff_to_deep": True}],
+            section_id="S1",
+        ),
+        # Section 2: directly submit (DIFFERENT section_id — proves per-section isolation)
+        _ai_submit(
+            [{"paper_id": "arxiv:2.1", "title": "P2", "source": "arxiv",
+              "why_relevant": "y", "handoff_to_deep": False}],
+            section_id="S2",
+        ),
     ]
     node, _ = wide_node_factory(scripted)
 
@@ -601,3 +617,85 @@ def test_extract_paper_ids_raises_on_unknown_tool():
 
     with pytest.raises(ValueError, match="unknown tool"):
         _extract_paper_ids_from_tool_result("future_tool_not_in_chain", fake_result)
+
+
+def test_wide_node_submit_results_mismatch_continues_loop_then_caps(
+    conn: psycopg.Connection, wide_node_factory, patch_agent_transaction
+):
+    """LLM submits with WRONG section_id — node feeds error back, loop continues
+    until 8-turn cap. Verifies (a) wrong-section candidates do NOT corrupt
+    section_notes for the current section; (b) re-prompt mechanism works
+    (production code appends a ToolMessage error)."""
+    patch_agent_transaction("surveyforge.agents.researcher_wide")
+    bad_candidates = [
+        {"paper_id": "arxiv:wrong.1", "title": "Wrong section paper", "source": "arxiv",
+         "why_relevant": "should be ignored", "handoff_to_deep": True},
+    ]
+    # 8 turns, all submit_results with WRONG section_id (current section is S1; LLM keeps emitting S2)
+    scripted = [_ai_submit(bad_candidates, section_id="S2") for _ in range(8)]
+    # Make IDs unique so multiple identical AIMessages don't collide on tc_id
+    for i, msg in enumerate(scripted):
+        msg.tool_calls[0]["id"] = f"tc_submit_S2_{i}"
+    node, _ = wide_node_factory(scripted)
+
+    run_id = _make_run(conn)
+    state = make_initial_state(topic="x")
+    state["outline"] = _outline_one_section()  # one section: "S1"
+    config: RunnableConfig = {"configurable": {"thread_id": run_id}}
+
+    result = node(state, config)
+
+    # Wrong-section candidates were NOT written to S1's notes (mismatch rejected)
+    assert "arxiv:wrong.1" not in [
+        p.get("paper_id") for p in result["section_notes"].get("S1", [])
+    ]
+    assert result["section_notes"].get("S1", []) == []  # forced exit shape
+
+    # Forced exit (8-turn cap with no acceptable submit) → context_overflow recorded
+    rm = RunManager(conn)
+    refreshed = rm.get(run_id)
+    # Either context_overflow or schema_invalid is acceptable depending on which
+    # exit fires first; the load-bearing assertion is "non-None error category set"
+    assert refreshed.error_category in ("context_overflow", "schema_invalid")
+    from surveyforge.runtime.runs import RunStatus
+    assert refreshed.status == RunStatus.RUNNING  # non-terminal
+
+
+def test_wide_node_json_fallback_mismatch_treated_as_schema_invalid(
+    conn: psycopg.Connection, wide_node_factory, patch_agent_transaction
+):
+    """JSON fallback path: LLM emits valid-shape ResearcherWideOutput in plain
+    content (no tool_calls), BUT section_id is wrong. No tool_call_id to feed
+    back, so forced exit with schema_invalid (NOT context_overflow)."""
+    patch_agent_transaction("surveyforge.agents.researcher_wide")
+
+    mismatch_output = json.dumps({
+        "section_id": "S2",  # wrong — current section is S1
+        "query": "fallback",
+        "candidate_papers": [
+            {"paper_id": "arxiv:wrong.fb", "title": "FB", "source": "arxiv",
+             "why_relevant": "x", "handoff_to_deep": True},
+        ],
+        "notes": "json fallback with wrong section_id",
+    })
+    scripted = [AIMessage(
+        content=mismatch_output,
+        tool_calls=[],
+        usage_metadata={"input_tokens": 500, "output_tokens": 100, "total_tokens": 600},
+    )]
+    node, _ = wide_node_factory(scripted)
+
+    run_id = _make_run(conn)
+    state = make_initial_state(topic="x")
+    state["outline"] = _outline_one_section()  # S1
+    config: RunnableConfig = {"configurable": {"thread_id": run_id}}
+
+    result = node(state, config)
+
+    # Wrong-section candidates NOT in S1's notes
+    assert "arxiv:wrong.fb" not in [
+        p.get("paper_id") for p in result["section_notes"].get("S1", [])
+    ]
+    # Forced exit, schema_invalid (parsed but contract violation, not budget overflow)
+    rm = RunManager(conn)
+    assert rm.get(run_id).error_category == "schema_invalid"
