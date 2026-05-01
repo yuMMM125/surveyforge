@@ -17,13 +17,26 @@
       "section_id": "S2",
       "title": "Methods",
       "research_questions": [
-        "What are the main RLHF training methods?"
+        "What are the main RLHF training methods?",
+        "How does PPO-based RLHF differ from DPO?"
       ],
       "must_find_evidence": [
         "PPO-based RLHF (InstructGPT 2022)",
         "DPO (Rafailov et al. 2023)"
       ]
+    },
+    {
+      "section_id": "S3",
+      "title": "Open challenges",
+      "research_questions": [
+        "What are the main RLHF limitations?",
+        "What are recent attempts to address them?"
+      ],
+      "must_find_evidence": [
+        "Reward hacking / over-optimization findings",
+        "Constitutional AI or self-rewarding alternatives"
+      ]
     }
   ],
-  "rationale": "Two sections cover background + methods for a focused W2 demo."
+  "rationale": "Three sections cover background, methods, and open challenges — enough to demonstrate the W2 pipeline end-to-end."
 }

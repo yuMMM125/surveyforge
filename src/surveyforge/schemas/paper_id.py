@@ -15,11 +15,18 @@ VALID_PAPER_ID_PREFIXES = ("arxiv:", "s2:", "web:")
 
 
 def validate_paper_id_prefix(v: str) -> str:
-    if not any(v.startswith(p) for p in VALID_PAPER_ID_PREFIXES):
-        raise ValueError(
-            f"paper_id must start with one of {VALID_PAPER_ID_PREFIXES}, got {v!r}"
-        )
-    return v
+    for prefix in VALID_PAPER_ID_PREFIXES:
+        if v.startswith(prefix):
+            suffix = v[len(prefix):]
+            if not suffix.strip():
+                raise ValueError(
+                    f"paper_id has empty or whitespace-only suffix after prefix "
+                    f"{prefix!r}: {v!r}"
+                )
+            return v
+    raise ValueError(
+        f"paper_id must start with one of {VALID_PAPER_ID_PREFIXES}, got {v!r}"
+    )
 
 
 PaperId = Annotated[str, AfterValidator(validate_paper_id_prefix)]
