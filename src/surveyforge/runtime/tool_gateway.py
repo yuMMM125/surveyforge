@@ -34,6 +34,18 @@ SECRET_FIELD_PATTERNS: tuple[str, ...] = (
     "_key", "_token", "_secret", "password", "authorization",
 )
 
+def _json_default(obj: Any) -> str:
+    """Disambiguate non-primitive values in canonical-JSON serialization.
+
+    Without this, `Path("/a/b")` and the string `"/a/b"` would canonicalize
+    identically (both via `str()`), producing false cache-key collisions.
+    Real tool input schemas (Task 2) constrain inputs to JSON primitives so
+    this fallback rarely fires; it exists to make the W2 placeholder-schema
+    behavior collision-safe.
+    """
+    return f"<{type(obj).__name__}:{obj!s}>"
+
+
 # Stable error_category strings (will become ErrorCategory enum values in Bundle 1c).
 # Bundle 1c's refactor will rename usages to enum members but the string values
 # themselves stay identical — these literals match the names in spec § 2.7.6.
@@ -56,7 +68,9 @@ class ToolPolicy(BaseModel):
     allowed_roles: tuple[AgentRole, ...]
     input_schema: type[BaseModel]
     output_schema: type[BaseModel]
+    # W2: declared for future use; not enforced by ToolGateway.call (Bundle 1c will wrap).
     timeout_seconds: int = 30
+    # W2: declared for future use; not enforced by ToolGateway.call (Bundle 1c will wrap).
     max_retries: int = 2
     cache_ttl_seconds: int | None = 3600
     idempotent: bool = True  # False → never cache
@@ -95,7 +109,7 @@ def sanitize_args(args: dict[str, Any]) -> dict[str, Any]:
 def compute_input_hash(args: dict[str, Any]) -> str:
     """SHA-256 of canonical JSON (sort_keys=True) of sanitized args."""
     sanitized = sanitize_args(args)
-    canonical = json.dumps(sanitized, sort_keys=True, separators=(",", ":"), default=str)
+    canonical = json.dumps(sanitized, sort_keys=True, separators=(",", ":"), default=_json_default)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
@@ -167,13 +181,13 @@ class ToolGateway:
             raise
         output_payload = validated_out.model_dump()
 
-        encoded = json.dumps(output_payload, separators=(",", ":"), default=str).encode("utf-8")
+        encoded = json.dumps(output_payload, separators=(",", ":"), default=_json_default).encode("utf-8")
         truncated = len(encoded) > policy.max_result_bytes
         if truncated:
             output_payload = {"_truncated": True, "_byte_size": len(encoded)}
 
         output_hash = hashlib.sha256(
-            json.dumps(output_payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+            json.dumps(output_payload, sort_keys=True, separators=(",", ":"), default=_json_default).encode("utf-8")
         ).hexdigest()
 
         tool_call_id = self._record_call(
@@ -252,14 +266,18 @@ def _register(policy: ToolPolicy) -> None:
     TOOL_REGISTRY[policy.tool_name] = policy
 
 
-# Placeholder schemas for registry-level metadata. Real input/output schemas
-# get attached when Task 2 wrappers register concrete implementations via
-# `gateway.register(real_policy, real_impl)`.
 class _OpaqueArgs(BaseModel):
+    """Placeholder input schema for registry-level metadata.
+
+    Real schemas attach in Task 2 when concrete tool wrappers register via
+    `gateway.register(real_policy, real_impl)`. `extra="allow"` accepts any
+    keys so the W2 registry can hold policy metadata without a working impl.
+    """
     model_config = ConfigDict(extra="allow")
 
 
 class _OpaqueOutput(BaseModel):
+    """Placeholder output schema for registry-level metadata. See `_OpaqueArgs`."""
     model_config = ConfigDict(extra="allow")
 
 

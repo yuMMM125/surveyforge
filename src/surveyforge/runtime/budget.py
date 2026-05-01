@@ -78,6 +78,11 @@ class BudgetManager:
     `actual_usage_tokens` / `tokenizer_version` / `context_overflow_fallback_triggered`.
     The tokenizer version is captured per-call by the LLM router; this class
     tracks per-role rolling totals so we can flag estimator drift in W3.
+
+    Instances are per-run scope (constructed at graph start, GC'd at end); the
+    `_usage` dict accumulates without bound by design — that's fine because the
+    object's lifetime is bounded by one run. For long-lived process reuse, swap
+    to the Redis/Postgres limiter mentioned in the module docstring.
     """
 
     def __init__(self) -> None:
