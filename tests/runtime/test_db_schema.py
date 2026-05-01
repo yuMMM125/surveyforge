@@ -84,3 +84,20 @@ def test_artifacts_cascades_with_run_delete(conn: psycopg.Connection):
         cur.execute("DELETE FROM runs WHERE run_id = 'r1'")
         cur.execute("SELECT COUNT(*) FROM artifacts WHERE run_id = 'r1'")
         assert cur.fetchone() == (0,)
+
+
+def test_tool_calls_has_full_observability_columns(conn: psycopg.Connection):
+    """Spec § 2.7.3 requires agent_role / cache_hit / output_hash / truncated logging."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """SELECT column_name FROM information_schema.columns
+               WHERE table_schema = 'public' AND table_name = 'tool_calls'"""
+        )
+        cols = {row[0] for row in cur.fetchall()}
+    expected = {
+        "tool_call_id", "run_id", "tool_name", "tool_version",
+        "agent_role", "input_hash", "output", "output_hash",
+        "result_trust", "latency_ms", "cache_hit", "truncated",
+        "error_category", "created_at",
+    }
+    assert expected.issubset(cols), f"missing columns: {expected - cols}"

@@ -47,10 +47,14 @@ CREATE TABLE IF NOT EXISTS tool_calls (
     run_id         TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
     tool_name      TEXT NOT NULL,
     tool_version   TEXT NOT NULL,
+    agent_role     TEXT NOT NULL,
     input_hash     TEXT NOT NULL,
     output         JSONB,
+    output_hash    TEXT,
     result_trust   TEXT NOT NULL CHECK (result_trust IN ('trusted_internal','untrusted_content')),
     latency_ms     INTEGER,
+    cache_hit      BOOLEAN NOT NULL DEFAULT FALSE,
+    truncated      BOOLEAN NOT NULL DEFAULT FALSE,
     error_category TEXT,
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
