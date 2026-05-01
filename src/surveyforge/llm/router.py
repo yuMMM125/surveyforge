@@ -1,4 +1,4 @@
-"""LLMRouter: AgentRole → ChatOpenAI factory with caching and overrides."""
+"""LLMRouter: AgentRole → ChatOpenAI factory with caching, overrides, and YAML config loading."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -46,6 +46,7 @@ class LLMRouter:
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> LLMRouter:
+        """Construct an LLMRouter from a YAML routing config (see config/llm_routing.yaml for schema)."""
         return cls(bindings=load_routing_yaml(path))
 
     def get_llm(
@@ -94,7 +95,13 @@ class LLMRouter:
 
 
 def load_routing_yaml(path: str | Path) -> dict[AgentRole, RoleBinding]:
-    """Parse llm_routing.yaml into RoleBinding objects, validating completeness."""
+    """Parse llm_routing.yaml into RoleBinding objects, validating completeness.
+
+    Raises ValueError on: non-mapping top-level, unknown role keys, missing role
+    bindings, or any per-binding parse error (with role context). Unknown keys
+    inside a binding (e.g. `notes:`) are ignored to allow forward-compatible
+    schema evolution.
+    """
     raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise ValueError(f"{path}: expected mapping at top level")
@@ -104,13 +111,18 @@ def load_routing_yaml(path: str | Path) -> dict[AgentRole, RoleBinding]:
     for key, entry in raw.items():
         if key not in valid_roles:
             raise ValueError(f"Unknown role in {path}: {key!r}")
-        bindings[AgentRole(key)] = RoleBinding(
-            provider=ProviderName(entry["provider"]),
-            model=entry["model"],
-            temperature=float(entry.get("temperature", 0.0)),
-            max_tokens=entry.get("max_tokens"),
-            supports_fc=entry.get("supports_fc"),  # None if not set → fall back to provider default
-        )
+        try:
+            bindings[AgentRole(key)] = RoleBinding(
+                provider=ProviderName(entry["provider"]),
+                model=entry["model"],
+                temperature=float(entry.get("temperature", 0.0)),
+                max_tokens=entry.get("max_tokens"),
+                supports_fc=entry.get("supports_fc"),  # None if not set → fall back to provider default
+            )
+        except (KeyError, ValueError) as exc:
+            raise ValueError(
+                f"Invalid binding for role {key!r} in {path}: {exc}"
+            ) from exc
 
     missing = set(AgentRole) - bindings.keys()
     if missing:

@@ -3,6 +3,8 @@
 # Provider names must match surveyforge.llm.providers.ProviderName.
 # `supports_fc` is optional; omit to inherit provider-level default. Set explicitly
 # only when a binding's model differs in FC capability from its provider default.
+# `notes:` fields are documentation-only — load_routing_yaml does not load them
+# into RoleBinding (forward-compatible: unknown per-binding keys are ignored).
 
 planner:
   provider: glm
