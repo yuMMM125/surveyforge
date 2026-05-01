@@ -93,6 +93,17 @@ class LLMRouter:
             self._cache[role] = llm
         return llm
 
+    def binding(self, role: AgentRole) -> RoleBinding:
+        """Return the RoleBinding for a role. Raises KeyError if unconfigured.
+
+        Useful when callers need binding-level metadata (e.g., `fc_enabled()`)
+        without instantiating the LLM. `get_llm` does not expose this because
+        it returns a generic ChatOpenAI without binding affordance.
+        """
+        if role not in self._bindings:
+            raise KeyError(f"No binding configured for role: {role.value}")
+        return self._bindings[role]
+
 
 def load_routing_yaml(path: str | Path) -> dict[AgentRole, RoleBinding]:
     """Parse llm_routing.yaml into RoleBinding objects, validating completeness.

@@ -15,6 +15,7 @@ from typing import Any
 import jsonschema
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.runnables import RunnableConfig
 
 JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\}|\[.*?\])\s*```", re.DOTALL)
 BARE_JSON_RE = re.compile(r"(\{.*\}|\[.*\])", re.DOTALL)
@@ -70,6 +71,7 @@ def structured_call(
     tool_name: str = "structured_output",
     max_retries: int = 2,
     supports_fc: bool = True,
+    config: RunnableConfig | None = None,
 ) -> Any:
     """Call llm and return parsed JSON validated against schema.
 
@@ -106,7 +108,7 @@ def structured_call(
     last_error: str = "no candidate JSON found"
 
     for attempt in range(max_retries + 1):
-        resp = invoker.invoke(attempt_messages)
+        resp = invoker.invoke(attempt_messages, config=config)
         assert isinstance(resp, AIMessage)
 
         candidate: Any | None = None
