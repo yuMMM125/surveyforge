@@ -1360,11 +1360,6 @@ dev = [
     { name = "pytest-mock" },
     { name = "respx" },
     { name = "ruff" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "mypy" },
     { name = "types-jsonschema" },
     { name = "types-pyyaml" },
 ]
@@ -1377,7 +1372,7 @@ requires-dist = [
     { name = "langchain-openai", specifier = ">=0.2" },
     { name = "langfuse", specifier = ">=2.40,<3" },
     { name = "langgraph", specifier = ">=0.2" },
-    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
+    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.20" },
     { name = "pydantic", specifier = ">=2.5" },
     { name = "pydantic-settings", specifier = ">=2.1" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
@@ -1388,15 +1383,10 @@ requires-dist = [
     { name = "respx", marker = "extra == 'dev'", specifier = ">=0.21" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
     { name = "tenacity", specifier = ">=8.2" },
+    { name = "types-jsonschema", marker = "extra == 'dev'", specifier = ">=4.23" },
+    { name = "types-pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },
 ]
 provides-extras = ["dev"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "mypy", specifier = ">=1.20.2" },
-    { name = "types-jsonschema", specifier = ">=4.23.0.20241208" },
-    { name = "types-pyyaml", specifier = ">=6.0.12.20260408" },
-]
 
 [[package]]
 name = "tenacity"

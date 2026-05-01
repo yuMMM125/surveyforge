@@ -26,7 +26,9 @@ dev = [
     "pytest-mock>=3.12",
     "respx>=0.21",
     "ruff>=0.6",
-    "mypy>=1.10",
+    "mypy>=1.20",
+    "types-jsonschema>=4.23",
+    "types-pyyaml>=6.0",
 ]
 
 [build-system]
@@ -57,10 +59,3 @@ ignore = ["E501"]
 python_version = "3.11"
 strict = true
 files = ["src/surveyforge"]
-
-[dependency-groups]
-dev = [
-    "mypy>=1.20.2",
-    "types-jsonschema>=4.23.0.20241208",
-    "types-pyyaml>=6.0.12.20260408",
-]

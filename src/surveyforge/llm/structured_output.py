@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Sequence
 from typing import Any
 
 import jsonschema
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 
 JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\}|\[.*?\])\s*```", re.DOTALL)
 BARE_JSON_RE = re.compile(r"(\{.*\}|\[.*\])", re.DOTALL)
@@ -63,7 +64,7 @@ def _fallback_system_prompt(schema: dict[str, Any]) -> SystemMessage:
 
 def structured_call(
     llm: BaseChatModel,
-    messages: list[Any],
+    messages: Sequence[BaseMessage],
     schema: dict[str, Any],
     *,
     tool_name: str = "structured_output",
@@ -127,6 +128,10 @@ def structured_call(
             last_error = "no candidate JSON found"
 
         if attempt < max_retries:
+            # On retry — even on the FC path — we prepend the schema-dumped system
+            # prompt as a second signal beyond the bound tool definition. attempt_messages
+            # is REASSIGNED (not appended), so corrective prompts don't accumulate
+            # across iterations.
             attempt_messages = [
                 _fallback_system_prompt(schema),
                 *messages,
