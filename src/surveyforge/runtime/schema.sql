@@ -31,14 +31,16 @@ CREATE TABLE IF NOT EXISTS artifacts (
 CREATE INDEX IF NOT EXISTS idx_artifacts_run_kind ON artifacts(run_id, kind);
 
 CREATE TABLE IF NOT EXISTS evidence_items (
-    evidence_id  TEXT PRIMARY KEY,
-    run_id       TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
-    section_id   TEXT NOT NULL,
-    paper_id     TEXT NOT NULL,
-    claim        TEXT NOT NULL,
-    source_span  TEXT,
-    confidence   REAL NOT NULL CHECK (confidence >= 0 AND confidence <= 1),
-    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+    evidence_id    TEXT PRIMARY KEY,
+    run_id         TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
+    section_id     TEXT NOT NULL,
+    paper_id       TEXT NOT NULL,
+    claim          TEXT NOT NULL,
+    source_span    TEXT,
+    source_locator TEXT,
+    confidence     REAL NOT NULL CHECK (confidence >= 0 AND confidence <= 1),
+    created_by     TEXT NOT NULL,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_evidence_run_section ON evidence_items(run_id, section_id);
 

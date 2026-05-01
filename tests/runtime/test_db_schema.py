@@ -65,9 +65,10 @@ def test_evidence_items_confidence_range(conn: psycopg.Connection):
         with pytest.raises(psycopg.errors.CheckViolation):
             cur.execute(
                 """INSERT INTO evidence_items
-                   (evidence_id, run_id, section_id, paper_id, claim, confidence)
-                   VALUES (%s, %s, %s, %s, %s, %s)""",
-                ("E-1", "r1", "S1", "arxiv:1", "claim", 1.5),
+                   (evidence_id, run_id, section_id, paper_id, claim,
+                    confidence, created_by)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                ("E-1", "r1", "S1", "arxiv:1", "claim", 1.5, "researcher_deep"),
             )
 
 
@@ -101,3 +102,17 @@ def test_tool_calls_has_full_observability_columns(conn: psycopg.Connection):
         "error_category", "created_at",
     }
     assert expected.issubset(cols), f"missing columns: {expected - cols}"
+
+
+def test_evidence_items_has_full_pydantic_columns(conn: psycopg.Connection):
+    """Spec § 2.5 EvidenceItem requires source_locator (nullable) and created_by (NOT NULL)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """SELECT column_name, is_nullable FROM information_schema.columns
+               WHERE table_schema = 'public' AND table_name = 'evidence_items'"""
+        )
+        cols = {row[0]: row[1] for row in cur.fetchall()}
+    assert "source_locator" in cols
+    assert cols["source_locator"] == "YES"
+    assert "created_by" in cols
+    assert cols["created_by"] == "NO"

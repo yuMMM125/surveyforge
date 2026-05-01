@@ -10,9 +10,6 @@ Every external + runtime tool call goes through ToolGateway.call so:
 - result_trust tagged so downstream prompts can wrap untrusted_content
 - every call (hit OR miss OR output-validation-failure) logged to `tool_calls`
   for traceability
-
-`ErrorCategory` enum is **not** in this module — Bundle 1c ships it; until then
-the `error_category` column receives raw strings and `None`.
 """
 from __future__ import annotations
 
@@ -27,6 +24,7 @@ import psycopg
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from surveyforge.llm.roles import AgentRole
+from surveyforge.runtime.errors import ErrorCategory
 
 # Field names whose values must be sanitized out before hashing input args.
 # Match by case-insensitive substring — covers credentials passed through args.
@@ -44,12 +42,6 @@ def _json_default(obj: Any) -> str:
     behavior collision-safe.
     """
     return f"<{type(obj).__name__}:{obj!s}>"
-
-
-# Stable error_category strings (will become ErrorCategory enum values in Bundle 1c).
-# Bundle 1c's refactor will rename usages to enum members but the string values
-# themselves stay identical — these literals match the names in spec § 2.7.6.
-_ERR_SCHEMA_INVALID = "schema_invalid"
 
 
 class ToolNotRegistered(KeyError):
@@ -176,7 +168,7 @@ class ToolGateway:
                 output=None, output_hash=None,
                 result_trust=policy.result_trust, latency_ms=latency_ms,
                 cache_hit=False, truncated=False,
-                error_category=_ERR_SCHEMA_INVALID,
+                error_category=ErrorCategory.SCHEMA_INVALID.value,
             )
             raise
         output_payload = validated_out.model_dump()
