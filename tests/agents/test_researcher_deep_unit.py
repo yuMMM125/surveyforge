@@ -913,6 +913,350 @@ def test_deep_node_no_fallback_for_non_transient_s2_errors(
     )
 
 
+# ---- Task 7 polish 6: 3-paper end-to-end fallback coverage ----
+#
+# Polish 5 unit tests (above) cover individual fallback decisions on a single
+# paper. These three tests exercise the full Deep node end-to-end with
+# multiple papers exercising the s2-429 → arxiv-fallback path, validating the
+# hypothesis that today's bounded-smoke "1 + 1 = 2 calls only" mystery is an
+# external provider effect (LLM 429 / network) rather than a Deep code bug.
+
+
+def _arxiv_atom_for(arxiv_id: str, abstract: str, title: str = "Test paper") -> str:
+    """Build a minimal arxiv atom feed for a given id + abstract."""
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <id>http://arxiv.org/abs/{arxiv_id}v1</id>
+    <title>{title}</title>
+    <summary>{abstract}</summary>
+  </entry>
+</feed>
+"""
+
+
+def _state_3_paper_handoff() -> dict[str, Any]:
+    """Build a SurveyState with 3 arxiv papers in section S1 (S1 outline + section_notes)."""
+    state = make_initial_state(topic="x")
+    state["outline"] = _outline()
+    paper_ids = ["arxiv:1234.5678", "arxiv:2345.6789", "arxiv:3456.7890"]
+    state["section_notes"] = {
+        "S1": [
+            {"paper_id": pid, "title": f"Paper {pid}", "source": "arxiv",
+             "why_relevant": "x", "handoff_to_deep": True}
+            for pid in paper_ids
+        ]
+    }
+    state["deep_read_queue"] = list(paper_ids)
+    return state
+
+
+def _setup_3_paper_s2_429_arxiv_success(monkeypatch, respx_mock):
+    """Common HTTP-mock setup for Tests 1/2/3.
+
+    s2: 4x 429 per paper (1 initial + 3 retries -> exhausted -> raise).
+    arxiv: 200 with valid atom feed per paper, indexed by id_list query param.
+    Returns (s2_routes, arxiv_routes) dicts keyed by bare arxiv id.
+    """
+    import httpx
+
+    from surveyforge.tools import arxiv_lookup, s2_lookup
+
+    # Strip system proxy env vars — without this, httpx.Client construction
+    # inside s2_lookup tries SOCKS5 transport (socksio not in dev deps).
+    for var in ("ALL_PROXY", "HTTP_PROXY", "HTTPS_PROXY",
+                "all_proxy", "http_proxy", "https_proxy"):
+        monkeypatch.delenv(var, raising=False)
+
+    # Skip retry sleeps - 1+2+4 backoff x 3 papers = 21s otherwise.
+    monkeypatch.setattr("surveyforge.tools.s2_lookup.time.sleep", lambda s: None)
+    monkeypatch.setattr("surveyforge.tools.arxiv_lookup.time.sleep", lambda s: None)
+
+    bare_ids = ["1234.5678", "2345.6789", "3456.7890"]
+    abstracts = {
+        "1234.5678": "Paper 1 abstract.",
+        "2345.6789": "Paper 2 abstract.",
+        "3456.7890": "Paper 3 abstract.",
+    }
+
+    s2_routes: dict[str, Any] = {}
+    arxiv_routes: dict[str, Any] = {}
+    for bare in bare_ids:
+        # s2: 4 sequential 429 responses (1 initial attempt + 3 retries)
+        s2_routes[bare] = respx_mock.get(
+            f"{s2_lookup.S2_API_BASE}/paper/arXiv:{bare}",
+            name=f"s2_{bare}",
+        ).mock(side_effect=[httpx.Response(429)] * 4)
+        # arxiv: 200 success, distinguished per-paper via id_list query param
+        arxiv_routes[bare] = respx_mock.get(
+            arxiv_lookup.ARXIV_API_BASE,
+            params={"id_list": bare},
+            name=f"arxiv_{bare}",
+        ).mock(
+            return_value=httpx.Response(
+                200, content=_arxiv_atom_for(bare, abstracts[bare])
+            )
+        )
+    return s2_routes, arxiv_routes
+
+
+def test_deep_node_3_papers_s2_429_arxiv_fallback_persists_evidence_happy_path(
+    conn: psycopg.Connection, monkeypatch, patch_agent_transaction, respx_mock,
+):
+    """3 arxiv papers, s2 429s every paper, arxiv fallback succeeds with abstracts,
+    LLM returns valid output covering all 3 → evidence_items has 3 rows; no error.
+
+    This is the precise end-to-end shape today's bounded smoke run was supposed
+    to produce. If this test passes, the fallback orchestrator + per-paper fetch
+    loop + evidence_store_write integration all work correctly across multiple
+    papers in a single section.
+    """
+    patch_agent_transaction("surveyforge.agents.researcher_deep")
+    _setup_3_paper_s2_429_arxiv_success(monkeypatch, respx_mock)
+
+    router = LLMRouter({
+        AgentRole.RESEARCHER_DEEP: RoleBinding(
+            provider=ProviderName.MINIMAX, model="minimax",
+        ),
+    })
+    monkeypatch.setattr(router, "get_llm", MagicMock(return_value=MagicMock()))
+    monkeypatch.setattr(
+        "surveyforge.agents.researcher_deep.structured_call",
+        MagicMock(return_value={
+            "section_id": "S1",
+            "paper_ids_processed": [
+                "arxiv:1234.5678", "arxiv:2345.6789", "arxiv:3456.7890",
+            ],
+            "insufficient_evidence_paper_ids": [],
+            # Note: evidence_id values are ignored — Deep overrides with
+            # f"E-{run_id}-{section_id}-{i}". They're required by the
+            # EvidenceCard schema (validated upstream of Deep's overwrite).
+            "evidence_cards": [
+                {"evidence_id": "ignored-1", "section_id": "S1",
+                 "paper_id": "arxiv:1234.5678", "claim": "claim 1",
+                 "source_span": "Paper 1 abstract.", "confidence": 0.9},
+                {"evidence_id": "ignored-2", "section_id": "S1",
+                 "paper_id": "arxiv:2345.6789", "claim": "claim 2",
+                 "source_span": "Paper 2 abstract.", "confidence": 0.8},
+                {"evidence_id": "ignored-3", "section_id": "S1",
+                 "paper_id": "arxiv:3456.7890", "claim": "claim 3",
+                 "source_span": "Paper 3 abstract.", "confidence": 0.85},
+            ],
+        }),
+    )
+
+    registry = PromptRegistry()
+    budget_manager = BudgetManager()
+    node = make_researcher_deep_node(router, registry, budget_manager)
+
+    run_id = _make_run(conn)
+    state = _state_3_paper_handoff()
+    config: RunnableConfig = {"configurable": {"thread_id": run_id}}
+    result = node(state, config)
+
+    # All 3 papers processed → queue empty
+    assert result["deep_read_queue"] == [], (
+        f"expected all 3 papers processed; remaining queue: {result['deep_read_queue']}"
+    )
+
+    # 3 evidence_items rows persisted
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT COUNT(*) FROM evidence_items WHERE run_id = %s", (run_id,),
+        )
+        ev_count = cur.fetchone()[0]
+    assert ev_count == 3, f"expected 3 evidence_items rows, got {ev_count}"
+
+    # 3 evidence_store_write tool_calls rows
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT COUNT(*) FROM tool_calls "
+            "WHERE run_id = %s AND tool_name = 'evidence_store_write'",
+            (run_id,),
+        )
+        write_count = cur.fetchone()[0]
+    assert write_count == 3, (
+        f"expected 3 evidence_store_write tool_calls rows, got {write_count}"
+    )
+
+    # No error_category (clean run)
+    rm = RunManager(conn)
+    assert rm.get(run_id).error_category is None
+
+
+def test_deep_node_llm_provider_429_after_fallback_success_records_error_no_evidence(
+    conn: psycopg.Connection, monkeypatch, patch_agent_transaction, respx_mock,
+):
+    """s2 429 + arxiv fallback success (fetch phase OK), but structured_call raises
+    HTTPStatusError(429). Verify Deep handles LLM-side 429 cleanly:
+    no evidence written, papers stay in queue, runs.error_category=provider_429.
+
+    This is one of the candidate explanations for today's bounded-smoke
+    "0 evidence" outcome — LLM gateway throttled the structured_call.
+    """
+    import httpx
+
+    patch_agent_transaction("surveyforge.agents.researcher_deep")
+    _setup_3_paper_s2_429_arxiv_success(monkeypatch, respx_mock)
+
+    router = LLMRouter({
+        AgentRole.RESEARCHER_DEEP: RoleBinding(
+            provider=ProviderName.MINIMAX, model="minimax",
+        ),
+    })
+    monkeypatch.setattr(router, "get_llm", MagicMock(return_value=MagicMock()))
+
+    llm_429 = httpx.HTTPStatusError(
+        "Rate limited",
+        request=httpx.Request("POST", "https://models.sjtu.edu.cn/api/v1/chat/completions"),
+        response=httpx.Response(429),
+    )
+    monkeypatch.setattr(
+        "surveyforge.agents.researcher_deep.structured_call",
+        MagicMock(side_effect=llm_429),
+    )
+
+    registry = PromptRegistry()
+    budget_manager = BudgetManager()
+    node = make_researcher_deep_node(router, registry, budget_manager)
+
+    run_id = _make_run(conn)
+    state = _state_3_paper_handoff()
+    config: RunnableConfig = {"configurable": {"thread_id": run_id}}
+    result = node(state, config)
+
+    # Zero evidence persisted (LLM call failed before output validation)
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT COUNT(*) FROM evidence_items WHERE run_id = %s", (run_id,),
+        )
+        ev_count = cur.fetchone()[0]
+    assert ev_count == 0, f"expected 0 evidence_items, got {ev_count}"
+
+    # Zero evidence_store_write rows (LLM 429 → never reached write loop)
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT COUNT(*) FROM tool_calls "
+            "WHERE run_id = %s AND tool_name = 'evidence_store_write'",
+            (run_id,),
+        )
+        write_count = cur.fetchone()[0]
+    assert write_count == 0, (
+        f"expected 0 evidence_store_write rows on LLM 429, got {write_count}"
+    )
+
+    # Papers stay queued — at least one (in practice all 3 since the only section
+    # failed at LLM step)
+    assert len(result["deep_read_queue"]) >= 1, (
+        f"expected ≥ 1 paper still queued after LLM 429; got: {result['deep_read_queue']}"
+    )
+
+    # error_category latched as provider_429
+    rm = RunManager(conn)
+    assert rm.get(run_id).error_category == "provider_429"
+
+
+def test_deep_node_fetch_loop_iterates_each_paper_no_cache_dedup(
+    conn: psycopg.Connection, monkeypatch, patch_agent_transaction, respx_mock,
+):
+    """Defensive test for today's bounded-smoke mystery (s2_lookup x 1 +
+    arxiv_lookup x 1 = only 2 calls total despite multi-paper queue).
+
+    Verify the per-section pre-fetch loop calls s2_lookup AND arxiv_lookup
+    EXACTLY ONCE per paper — no early break, no in-section cache dedup.
+    structured_call is mocked to return empty evidence_cards (still valid output)
+    so the test focuses purely on fetch-loop iteration count.
+
+    If this test passes, the fetch loop is correct and today's external mystery
+    has another explanation (LLM 429, real provider state, etc). If it fails,
+    we've found a real Deep bug.
+    """
+    patch_agent_transaction("surveyforge.agents.researcher_deep")
+    s2_routes, arxiv_routes = _setup_3_paper_s2_429_arxiv_success(monkeypatch, respx_mock)
+
+    router = LLMRouter({
+        AgentRole.RESEARCHER_DEEP: RoleBinding(
+            provider=ProviderName.MINIMAX, model="minimax",
+        ),
+    })
+    monkeypatch.setattr(router, "get_llm", MagicMock(return_value=MagicMock()))
+
+    # Empty evidence_cards is valid output as long as paper_ids_processed covers
+    # all input papers (insufficient_evidence_paper_ids carries the explanation).
+    monkeypatch.setattr(
+        "surveyforge.agents.researcher_deep.structured_call",
+        MagicMock(return_value={
+            "section_id": "S1",
+            "paper_ids_processed": [
+                "arxiv:1234.5678", "arxiv:2345.6789", "arxiv:3456.7890",
+            ],
+            "insufficient_evidence_paper_ids": [
+                "arxiv:1234.5678", "arxiv:2345.6789", "arxiv:3456.7890",
+            ],
+            "evidence_cards": [],
+        }),
+    )
+
+    registry = PromptRegistry()
+    budget_manager = BudgetManager()
+    node = make_researcher_deep_node(router, registry, budget_manager)
+
+    run_id = _make_run(conn)
+    state = _state_3_paper_handoff()
+    config: RunnableConfig = {"configurable": {"thread_id": run_id}}
+    node(state, config)
+
+    # Per-route: each s2 paper hit 4x (1 initial + 3 retries) = 12 total s2 HTTP
+    # requests; each arxiv route hit exactly 1x = 3 total arxiv HTTP requests.
+    for bare, route in s2_routes.items():
+        assert route.call_count == 4, (
+            f"s2 route for {bare} expected 4 hits (1 + 3 retries), got {route.call_count}"
+        )
+    for bare, route in arxiv_routes.items():
+        assert route.call_count == 1, (
+            f"arxiv route for {bare} expected 1 hit, got {route.call_count}"
+        )
+
+    # tool_calls counts (one row per ToolGateway.call invocation regardless of
+    # how many HTTP retries happened inside the impl): 3 s2_lookup + 3 arxiv_lookup
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT COUNT(*) FROM tool_calls "
+            "WHERE run_id = %s AND tool_name = 's2_lookup'",
+            (run_id,),
+        )
+        s2_count = cur.fetchone()[0]
+    assert s2_count == 3, (
+        f"expected exactly 3 s2_lookup tool_calls rows (one per paper), got {s2_count}"
+    )
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT COUNT(*) FROM tool_calls "
+            "WHERE run_id = %s AND tool_name = 'arxiv_lookup'",
+            (run_id,),
+        )
+        arxiv_count = cur.fetchone()[0]
+    assert arxiv_count == 3, (
+        f"expected exactly 3 arxiv_lookup tool_calls rows (fallback once per paper), "
+        f"got {arxiv_count}"
+    )
+
+    # Defensive: every s2_lookup row has cache_hit=False (failed calls aren't
+    # cached, but if a programmer-bug stored 429 errors as success-cached, this
+    # would catch it).
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT cache_hit FROM tool_calls "
+            "WHERE run_id = %s AND tool_name = 's2_lookup'",
+            (run_id,),
+        )
+        cache_flags = [row[0] for row in cur.fetchall()]
+    assert all(flag is False for flag in cache_flags), (
+        f"all s2_lookup rows should be cache_hit=False; got: {cache_flags}"
+    )
+
+
 # ---- factory shape ----
 
 def test_make_researcher_deep_node_returns_callable():
