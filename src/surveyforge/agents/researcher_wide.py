@@ -130,6 +130,24 @@ def _bind_tools_for_wide(llm: Any) -> Any:
     return llm.bind_tools(tools_payload)
 
 
+def _source_from_prefix(paper_id: str) -> str:
+    """Map paper_id prefix to CandidatePaper.source value (for forced-exit stubs).
+
+    Used when Wide's forced-exit branch writes minimal CandidatePaper-shaped
+    stubs to section_notes (Task 4 polish #4 / Decision #5 from Task 5 plan).
+    Without these stubs, papers in `seen_paper_ids` would be orphaned in
+    `deep_read_queue` with no section context — Deep's section_notes
+    cross-reference would silently skip them.
+    """
+    if paper_id.startswith("arxiv:"):
+        return "arxiv"
+    if paper_id.startswith("s2:"):
+        return "s2"
+    if paper_id.startswith("web:"):
+        return "web"
+    raise ValueError(f"unknown paper_id prefix: {paper_id!r}")
+
+
 def _extract_paper_ids_from_tool_result(tool_name: str, result: ToolResult) -> set[str]:
     """Pull canonical paper_id strings out of a tool result for seen-candidates tracking.
 
@@ -371,9 +389,24 @@ def make_researcher_wide_node(
                     if paper.handoff_to_deep and paper.paper_id not in new_deep_queue:
                         new_deep_queue.append(paper.paper_id)
             else:
-                # Forced exit — empty section_notes (we never got triaged candidates),
-                # but ALL seen paper_ids go to Deep so they're not lost.
-                new_section_notes[section.section_id] = []
+                # Forced exit — Wide didn't get to triage these via submit_results.
+                # Write CandidatePaper-shaped stubs (paper_id known, why_relevant/title
+                # empty) so Deep's section_notes cross-reference picks them up. Stubs
+                # are plain dicts (section_notes is dict[str, list[dict[str, Any]]]),
+                # not validated against CandidatePaper Pydantic — so empty title +
+                # forced-exit marker stay benign. Without this, Deep would skip these
+                # papers (orphan) and the `seen_paper_ids` preservation work is wasted.
+                new_section_notes[section.section_id] = [
+                    {
+                        "paper_id": pid,
+                        "title": "",
+                        "source": _source_from_prefix(pid),
+                        "why_relevant": "<forced-exit stub: not triaged by Wide>",
+                        "handoff_to_deep": True,
+                        "_forced_exit_stub": True,
+                    }
+                    for pid in seen_paper_ids
+                ]
                 for pid in seen_paper_ids:
                     if pid not in new_deep_queue:
                         new_deep_queue.append(pid)

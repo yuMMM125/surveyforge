@@ -231,6 +231,18 @@ def test_s2_lookup_through_gateway_logs_tool_call(conn: psycopg.Connection, resp
         assert cur.fetchone() == ("s2_lookup",)
 
 
+def test_s2_lookup_allows_researcher_deep(conn: psycopg.Connection, respx_mock):
+    """Deep uses s2_lookup as the W2 abstract pre-fetch tool."""
+    respx_mock.get(f"{s2_lookup.S2_API_BASE}/paper/arXiv:2401.12345").mock(
+        return_value=httpx.Response(200, json=S2_PAPER_FIXTURE)
+    )
+    run_id = _make_run(conn)
+    gw = ToolGateway(conn, run_id)
+    s2_lookup.register(gw)
+    res = gw.call(AgentRole.RESEARCHER_DEEP, "s2_lookup", paper_id="arxiv:2401.12345")
+    assert res.output.paper is not None
+
+
 def test_s2_lookup_paper_id_only_accepts_arxiv_or_s2_prefix(respx_mock):
     """`s2_lookup` accepts arxiv: / s2: only; bare ids, doi:, web: all rejected.
 

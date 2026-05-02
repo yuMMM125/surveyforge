@@ -51,6 +51,7 @@ def test_researcher_wide_front_matter(registry: PromptRegistry):
 
 def test_researcher_deep_front_matter(registry: PromptRegistry):
     rd = registry.load(AgentRole.RESEARCHER_DEEP)
+    assert rd.version == "0.2.0"
     assert rd.schema_class is ResearcherDeepOutput
     assert "pdf_reader" in rd.allowed_tools
     assert "citation_verifier" in rd.allowed_tools

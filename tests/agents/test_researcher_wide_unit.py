@@ -241,7 +241,12 @@ def test_wide_node_8_turn_cap_preserves_seen_paper_ids(
     result = node(state, config)
 
     assert len(gateway_calls) == 8  # all 8 turns dispatched
-    assert result["section_notes"].get("S1", []) == []  # no triaged candidates
+    # Forced-exit shape: section_notes contains stub entries (one per seen paper)
+    # so Deep's cross-reference picks them up — NOT empty list. (Task 5 / Decision #5)
+    stubs = result["section_notes"]["S1"]
+    assert len(stubs) == 8  # one stub per seen paper
+    assert all(s["_forced_exit_stub"] is True for s in stubs)
+    assert {s["paper_id"] for s in stubs} == {f"arxiv:2401.0000{i}" for i in range(8)}
     # All seen paper_ids land in deep_read_queue (the forced-exit hand-off contract)
     for i in range(8):
         assert f"arxiv:2401.0000{i}" in result["deep_read_queue"]
@@ -303,6 +308,12 @@ def test_wide_node_budget_exceeded_preserves_seen_paper_ids(
     # BOTH paper_ids from turn-1 results land in deep_read_queue (forced exit)
     assert "arxiv:2401.11111" in result["deep_read_queue"]
     assert "arxiv:2401.22222" in result["deep_read_queue"]
+    # Forced-exit shape: section_notes contains stub entries (one per seen paper)
+    # so Deep's cross-reference picks them up — NOT empty list. (Task 5 / Decision #5)
+    stubs = result["section_notes"]["S1"]
+    assert len(stubs) == 2
+    assert all(s["_forced_exit_stub"] is True for s in stubs)
+    assert {s["paper_id"] for s in stubs} == {"arxiv:2401.11111", "arxiv:2401.22222"}
 
 
 def test_wide_node_overflow_calls_note_error_category(

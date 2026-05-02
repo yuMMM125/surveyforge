@@ -6,6 +6,10 @@ PromptRegistry. Graph init (Task 6) constructs router/registry once and
 binds them via closure into per-node callables.
 """
 from surveyforge.agents.planner import PlannerNode, make_planner_node
+from surveyforge.agents.researcher_deep import (
+    ResearcherDeepNode,
+    make_researcher_deep_node,
+)
 from surveyforge.agents.researcher_wide import (
     ResearcherWideNode,
     make_researcher_wide_node,
@@ -13,7 +17,9 @@ from surveyforge.agents.researcher_wide import (
 
 __all__ = (
     "PlannerNode",
+    "ResearcherDeepNode",
     "ResearcherWideNode",
     "make_planner_node",
+    "make_researcher_deep_node",
     "make_researcher_wide_node",
 )

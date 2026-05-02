@@ -124,7 +124,9 @@ def make_policy() -> ToolPolicy:
     return ToolPolicy(
         tool_name=TOOL_NAME,
         tool_version=TOOL_VERSION,
-        allowed_roles=(AgentRole.RESEARCHER_WIDE,),
+        # Wide (search/lookup) + Deep (abstract pre-fetch). Per least-privilege:
+        # `arxiv_search` and `web_search` stay Wide-only because Deep doesn't call them.
+        allowed_roles=(AgentRole.RESEARCHER_WIDE, AgentRole.RESEARCHER_DEEP),
         input_schema=S2LookupInput,
         output_schema=S2LookupOutput,
         result_trust="trusted_internal",
