@@ -8,7 +8,8 @@ force-rollback transaction isolation, without copy-pasting.
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import psycopg
@@ -80,3 +81,31 @@ def conn(initialized_pool: ConnectionPool) -> Iterator[psycopg.Connection]:
     """Per-test connection: changes roll back at end of test."""
     with initialized_pool.connection() as c, c.transaction(force_rollback=True):
         yield c
+
+
+@pytest.fixture
+def patch_agent_transaction(
+    monkeypatch: pytest.MonkeyPatch, conn: psycopg.Connection,
+) -> Callable[[str], None]:
+    """Returns a function that patches `<module_path>.transaction` to yield the
+    test's force-rollback `conn`.
+
+    Lifted from `tests/agents/conftest.py` so root-level tests
+    (`test_graph_smoke.py`, `test_cli.py`) can use it — pytest conftest
+    discovery walks UP from the test file, so a fixture in `tests/agents/`
+    is invisible to tests at `tests/`.
+
+    Usage:
+        def test_x(patch_agent_transaction, conn):
+            patch_agent_transaction("surveyforge.agents.researcher_wide")
+            # node call now shares conn's transaction
+    """
+
+    @contextmanager
+    def _yield_conn() -> Iterator[psycopg.Connection]:
+        yield conn
+
+    def _patch(module_path: str) -> None:
+        monkeypatch.setattr(f"{module_path}.transaction", _yield_conn)
+
+    return _patch
