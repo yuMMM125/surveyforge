@@ -1,17 +1,17 @@
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: surveyforge-postgres
+    container_name: litweave-postgres
     environment:
-      POSTGRES_USER: surveyforge
-      POSTGRES_PASSWORD: surveyforge
-      POSTGRES_DB: surveyforge
+      POSTGRES_USER: litweave
+      POSTGRES_PASSWORD: litweave
+      POSTGRES_DB: litweave
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U surveyforge"]
+      test: ["CMD-SHELL", "pg_isready -U litweave"]
       interval: 5s
       timeout: 3s
       retries: 5
