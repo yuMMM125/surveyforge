@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import atexit
 import os
-from typing import Any, cast
+from typing import Any
 
 import psycopg
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -55,6 +55,13 @@ from surveyforge.writing.stub import make_write_stub_node
 # `psycopg.Connection[DictRow]` because PostgresSaver requires `dict_row`
 # rows (see kwargs in `_make_postgres_checkpointer`).
 _checkpointer_pool: ConnectionPool[psycopg.Connection[DictRow]] | None = None
+# NOTE (W6+): the lazy `if _checkpointer_pool is None` init in
+# `_make_postgres_checkpointer()` is racy under concurrent first-call —
+# two threads can both pass the None check and both create a pool, leaking
+# the second one (and its atexit.register). W2 graph execution is
+# single-threaded so this is safe today; when LangGraph's threaded/async
+# runner lands, wrap the lazy-init block in `threading.Lock` to serialize
+# pool construction. Same shape as the `runtime/db.py` `_pool` NOTE.
 
 
 def build_graph(
@@ -87,22 +94,26 @@ def build_graph(
         checkpointer = _make_postgres_checkpointer()
 
     g: StateGraph[SurveyState, Any, Any, Any] = StateGraph(SurveyState)
-    # Cast factory closures to `Any` for `add_node`: `Callable[[SurveyState,
-    # RunnableConfig], SurveyState]` is structurally a `_NodeWithConfig`
-    # protocol, but mypy cannot match a positional-arg Callable to that
-    # Protocol in strict mode. The runtime contract is enforced at the
-    # factory level (see PlannerNode etc. type aliases).
-    g.add_node("planner", cast(Any, make_planner_node(router, registry)))
+    # `add_node` is overloaded against a union of node Protocols (`_Node`,
+    # `_NodeWithConfig`, etc.); our factory closures are plain
+    # `Callable[[SurveyState, RunnableConfig], SurveyState]` and mypy in
+    # strict mode cannot match a positional-arg Callable to those Protocols,
+    # so every call site fails with `call-overload`. Each call below has a
+    # per-line `# type: ignore[call-overload]` rather than a blanket cast so
+    # mypy will surface `unused-ignore` if a future LangGraph release relaxes
+    # the overload set and the bridge becomes unnecessary. Runtime contract
+    # is enforced at the factory level (see PlannerNode etc. type aliases).
+    g.add_node("planner", make_planner_node(router, registry))  # type: ignore[call-overload]
     g.add_node(
         "researcher_wide",
-        cast(Any, make_researcher_wide_node(router, registry, budget_manager)),
+        make_researcher_wide_node(router, registry, budget_manager),  # type: ignore[call-overload]
     )
     g.add_node(
         "researcher_deep",
-        cast(Any, make_researcher_deep_node(router, registry, budget_manager)),
+        make_researcher_deep_node(router, registry, budget_manager),  # type: ignore[call-overload]
     )
-    g.add_node("synthesize", cast(Any, make_synthesize_stub_node()))
-    g.add_node("write", cast(Any, make_write_stub_node()))
+    g.add_node("synthesize", make_synthesize_stub_node())  # type: ignore[call-overload]
+    g.add_node("write", make_write_stub_node())  # type: ignore[call-overload]
 
     g.add_edge(START, "planner")
     g.add_edge("planner", "researcher_wide")

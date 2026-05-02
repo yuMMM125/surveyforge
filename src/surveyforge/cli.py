@@ -84,7 +84,10 @@ def _cmd_run(topic: str, idempotency_key: str | None) -> int:
         graph = build_graph()
         result = graph.invoke(initial_state, config=config)
     except Exception as exc:
-        # W2 minimal categorization. Task 7 may refine via classify_exception.
+        # AD #12 (W2-minimal): all graph-invoke exceptions are lumped into
+        # `schema_invalid` to keep CLI error handling small. Task 7 will refine
+        # this to call `classify_exception(exc)` so transport errors / 429 / 5xx
+        # get distinct error_category values.
         with transaction() as conn:
             RunManager(conn).fail(run.run_id, error_category="schema_invalid")
         print(f"run {run.run_id} failed: {exc!s}", file=sys.stderr)

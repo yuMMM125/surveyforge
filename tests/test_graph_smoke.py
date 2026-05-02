@@ -56,6 +56,93 @@ def _outline() -> list[dict]:
     ]
 
 
+def _install_marker_nodes(
+    monkeypatch: pytest.MonkeyPatch,
+    visited: list[str] | None = None,
+) -> None:
+    """Replace the 5 graph node factories with marker callables.
+
+    Used by both real-invoke smoke tests (one with InMemorySaver, one with
+    testcontainer PostgresSaver). The two tests differ only in checkpointer +
+    assertions, NOT in node behavior — so the marker scaffolding is shared
+    here to prevent drift if a future graph node change requires updating
+    both tests.
+
+    If `visited` is provided, each marker appends its name to the list so the
+    caller can assert visit order. If None, no order tracking (Postgres
+    round-trip test only cares about checkpoint persistence, not order).
+
+    Each marker also mutates state with the minimum needed for the next
+    node — Deep deliberately does nothing (real Deep persists evidence to DB
+    via tool_gateway; the marker bypasses that since the synth marker
+    populates structured_extracts directly downstream).
+    """
+    def _make_marker(name, mutate_state):
+        def _node(state, config):
+            if visited is not None:
+                visited.append(name)
+            mutate_state(state)
+            return state
+        return _node
+
+    def _planner_mut(s):
+        s["plan_outline"] = MagicMock(
+            sections=[MagicMock(
+                section_id="S1", title="Background",
+                research_questions=["Q1", "Q2"],
+                must_find_evidence=["c1"],
+            )],
+        )
+
+    def _wide_mut(s):
+        s["candidate_pool"] = {"S1": [{"paper_id": "arxiv:p1"}]}
+        s["deep_read_queue"] = {"S1": ["arxiv:p1"]}
+
+    def _deep_mut(s):
+        # Real Deep persists evidence to DB via tool_gateway; the marker
+        # bypasses that — synth marker below populates structured_extracts
+        # directly so write marker has something to format.
+        pass
+
+    def _synth_mut(s):
+        s["structured_extracts"] = {"S1": {
+            "section_id": "S1",
+            "papers_cited": ["arxiv:p1"],
+            "claims": [
+                {"evidence_id": "E-test-S1-0",
+                 "paper_id": "arxiv:p1",
+                 "claim": "smoke claim",
+                 "confidence": 0.9},
+            ],
+        }}
+
+    def _write_mut(s):
+        s["section_drafts"] = {
+            "S1": "## Background\n\n- smoke claim [E-test-S1-0]"
+        }
+
+    monkeypatch.setattr(
+        "surveyforge.graph.make_planner_node",
+        lambda *a, **kw: _make_marker("planner", _planner_mut),
+    )
+    monkeypatch.setattr(
+        "surveyforge.graph.make_researcher_wide_node",
+        lambda *a, **kw: _make_marker("researcher_wide", _wide_mut),
+    )
+    monkeypatch.setattr(
+        "surveyforge.graph.make_researcher_deep_node",
+        lambda *a, **kw: _make_marker("researcher_deep", _deep_mut),
+    )
+    monkeypatch.setattr(
+        "surveyforge.graph.make_synthesize_stub_node",
+        lambda: _make_marker("synthesize", _synth_mut),
+    )
+    monkeypatch.setattr(
+        "surveyforge.graph.make_write_stub_node",
+        lambda: _make_marker("write", _write_mut),
+    )
+
+
 # ---- topology ----
 
 def test_build_graph_returns_compiled_state_graph(monkeypatch):
@@ -181,47 +268,9 @@ def test_build_graph_default_postgres_checkpointer_round_trips_invoke(
     from surveyforge import graph as graph_mod
     graph_mod._reset_checkpointer_pool_for_tests()
 
-    # Replace all 5 node factories with markers — same pattern as
-    # `test_build_graph_invoke_runs_linear_flow_with_marker_nodes`, just
-    # paired with a real PostgresSaver instead of InMemorySaver.
-    def _make_marker(name: str, mutate_state):
-        def _node(state, config):
-            mutate_state(state)
-            return state
-        return _node
-
-    def _planner_mut(s):
-        s["plan_outline"] = MagicMock(
-            sections=[MagicMock(
-                section_id="S1", title="Background",
-                research_questions=["Q1", "Q2"],
-                must_find_evidence=["c1"],
-            )],
-        )
-
-    def _wide_mut(s):
-        s["candidate_pool"] = {"S1": [{"paper_id": "arxiv:p1"}]}
-        s["deep_read_queue"] = {"S1": ["arxiv:p1"]}
-
-    def _deep_mut(s): pass
-    def _synth_mut(s):
-        s["structured_extracts"] = {"S1": {
-            "section_id": "S1", "papers_cited": [], "claims": [],
-        }}
-
-    def _write_mut(s):
-        s["section_drafts"] = {"S1": "## Background\n\nNo evidence available"}
-
-    monkeypatch.setattr("surveyforge.graph.make_planner_node",
-                        lambda *a, **kw: _make_marker("planner", _planner_mut))
-    monkeypatch.setattr("surveyforge.graph.make_researcher_wide_node",
-                        lambda *a, **kw: _make_marker("wide", _wide_mut))
-    monkeypatch.setattr("surveyforge.graph.make_researcher_deep_node",
-                        lambda *a, **kw: _make_marker("deep", _deep_mut))
-    monkeypatch.setattr("surveyforge.graph.make_synthesize_stub_node",
-                        lambda: _make_marker("synth", _synth_mut))
-    monkeypatch.setattr("surveyforge.graph.make_write_stub_node",
-                        lambda: _make_marker("write", _write_mut))
+    # Marker nodes — no real LLMs, no DB-from-agents. This Postgres test does
+    # not assert visit order (only checkpoint persistence), so no `visited=`.
+    _install_marker_nodes(monkeypatch)
 
     router = LLMRouter({
         AgentRole.PLANNER: RoleBinding(provider=ProviderName.GLM, model="glm-5.1"),
@@ -297,73 +346,7 @@ def test_build_graph_invoke_runs_linear_flow_with_marker_nodes(monkeypatch):
     (which only inspects `g.nodes`) cannot catch.
     """
     visited: list[str] = []
-
-    def _make_marker(name: str, mutate_state):
-        def _node(state, config):
-            visited.append(name)
-            mutate_state(state)
-            return state
-        return _node
-
-    def _planner_mut(s):
-        s["plan_outline"] = MagicMock(
-            sections=[
-                MagicMock(
-                    section_id="S1",
-                    title="Background",
-                    research_questions=["Q1", "Q2"],
-                    must_find_evidence=["c1"],
-                ),
-            ],
-        )
-
-    def _wide_mut(s):
-        s["candidate_pool"] = {"S1": [{"paper_id": "arxiv:p1"}]}
-        s["deep_read_queue"] = {"S1": ["arxiv:p1"]}
-
-    def _deep_mut(s):
-        # Deep persists evidence to DB in production; the marker skips DB
-        # so we manually populate `structured_extracts` here for the
-        # synth/write stubs below to consume.
-        pass
-
-    def _synth_mut(s):
-        s["structured_extracts"] = {
-            "S1": {
-                "section_id": "S1",
-                "papers_cited": ["arxiv:p1"],
-                "claims": [
-                    {"evidence_id": "E-test-S1-0",
-                     "paper_id": "arxiv:p1",
-                     "claim": "smoke claim",
-                     "confidence": 0.9},
-                ],
-            },
-        }
-
-    def _write_mut(s):
-        s["section_drafts"] = {"S1": "## Background\n\n- smoke claim [E-test-S1-0]"}
-
-    monkeypatch.setattr(
-        "surveyforge.graph.make_planner_node",
-        lambda *a, **kw: _make_marker("planner", _planner_mut),
-    )
-    monkeypatch.setattr(
-        "surveyforge.graph.make_researcher_wide_node",
-        lambda *a, **kw: _make_marker("researcher_wide", _wide_mut),
-    )
-    monkeypatch.setattr(
-        "surveyforge.graph.make_researcher_deep_node",
-        lambda *a, **kw: _make_marker("researcher_deep", _deep_mut),
-    )
-    monkeypatch.setattr(
-        "surveyforge.graph.make_synthesize_stub_node",
-        lambda: _make_marker("synthesize", _synth_mut),
-    )
-    monkeypatch.setattr(
-        "surveyforge.graph.make_write_stub_node",
-        lambda: _make_marker("write", _write_mut),
-    )
+    _install_marker_nodes(monkeypatch, visited=visited)
 
     router = LLMRouter({
         AgentRole.PLANNER: RoleBinding(provider=ProviderName.GLM, model="glm-5.1"),
