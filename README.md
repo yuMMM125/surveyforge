@@ -60,18 +60,27 @@ Implemented and verified locally:
 - CLI draft preview support;
 - non-integration test suite, ruff, and mypy strict checks.
 
-W2 status (as of polish 5, 2026-05-02):
+Live validation status:
 
-- Semantic Scholar is now an optional enhancement. Researcher-Deep falls back
-  to the arxiv API on transient S2 failures (HTTP 429/5xx/network) for
-  `arxiv:*` papers, so the bounded smoke and CLI demo no longer require an
-  SS key. The SS key remains supported via `SEMANTIC_SCHOLAR_API_KEY` env
-  var for higher-quality abstracts on s2-only papers and to lift the
-  anonymous-IP rate limit.
-- All known external blockers resolved as of polish 5. The bounded smoke
-  (`tests/e2e/test_bounded_smoke.py`) is now a stable auto gate that
-  exercises real Wide + Deep + stub Synth/Write end-to-end without
-  requiring an SS key.
+- Semantic Scholar is an optional enhancement. Researcher-Deep transparently
+  falls back to the arXiv API on transient S2 failures (HTTP 429 / 5xx /
+  raw network errors) for `arxiv:*` papers, so the bounded smoke and CLI
+  demo do not require a `SEMANTIC_SCHOLAR_API_KEY`. The key remains supported
+  for higher-quality abstracts on s2-only papers and to lift anonymous-IP S2
+  rate limits.
+- The bounded smoke (`tests/e2e/test_bounded_smoke.py`, `pytest -m
+  integration`) is the stable live smoke. It mocks Planner and Wide to inject 3
+  known-relevant long-context-benchmark arXiv IDs (RULER, LongBench,
+  Counting-Stars) and exercises the real Researcher-Deep node end-to-end
+  against real S2, arXiv, and the configured MiniMax binding, including the
+  S2-to-arXiv fallback path on rate-limited papers. Verified PASS on
+  2026-05-02: `evidence_count=1`, `[E-...]` citation marker present in the
+  section draft, ~36 s wall time, mixed S2-success and S2-429-then-arXiv
+  fallback paths exercised in the same run.
+- The full multi-section live e2e (`test_section_draft_live.py`,
+  `pytest -m manual`) remains opportunistic. Multi-section integration on
+  broad topics still exposes Wide forced-exit nondeterminism and is not a
+  stable gate.
 
 ## Repository Layout
 
@@ -96,7 +105,6 @@ tests/
   schemas/
   tools/
 ```
-
 
 ## Setup
 
@@ -183,8 +191,8 @@ uv run pytest tests/e2e/test_section_draft_live.py -m manual -v -s
 ```
 
 The manual full-graph test is opportunistic. It is useful for demos and
-diagnostics, but it is not treated as a stable default gate because it
-depends on external model behavior across multiple sections.
+diagnostics, but it is not treated as a stable default gate because it depends
+on external model behavior across multiple sections.
 
 ## Roadmap
 

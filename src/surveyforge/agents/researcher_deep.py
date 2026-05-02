@@ -22,7 +22,6 @@ Web: papers also leave the queue (intentional W2 skip).
 """
 from __future__ import annotations
 
-import os
 from collections.abc import Callable
 from typing import Any
 
@@ -257,23 +256,6 @@ def make_researcher_deep_node(
                 if pid in deep_queue_set:
                     papers_by_section.setdefault(section_id, []).append(pid)
 
-        # Polish 7 diagnostic (env-gated; see Task 7 polish 7 in spike log).
-        # Bounded smoke v6 showed only 1 s2 + 1 arxiv audit row for a 3-paper
-        # deep_read_queue, but isolated unit tests (polish 6 Test 3) prove the
-        # fetch loop SHOULD iterate per paper. These prints capture the actual
-        # papers_by_section size + per-paper iteration trace + post-fetch state
-        # so the next live run definitively localises the gap (state-propagation
-        # vs loop-bug vs gateway-audit edge case).
-        if os.environ.get("SURVEYFORGE_DEBUG_DEEP"):
-            print(
-                "[deep-debug] papers_by_section sizes="
-                + str({k: len(v) for k, v in papers_by_section.items()})
-            )
-            print(
-                f"[deep-debug] deep_read_queue input len={len(deep_read_queue)} "
-                f"section_notes section_count={len(section_notes)}"
-            )
-
         last_error_category: str | None = None
         # Track which papers reached a "section's structured_call completed
         # successfully" state. Anything left in `deep_read_queue` after the
@@ -285,12 +267,6 @@ def make_researcher_deep_node(
             if section is None:
                 continue
 
-            if os.environ.get("SURVEYFORGE_DEBUG_DEEP"):
-                print(
-                    f"[deep-debug] section={section_id} "
-                    f"paper_ids_count={len(paper_ids)} paper_ids={paper_ids}"
-                )
-
             # Pre-fetch abstracts. _fetch_abstract no longer swallows exceptions:
             # transport errors (provider_429/5xx) propagate so the section gets
             # marked retry-eligible (papers stay in deep_read_queue). web: papers
@@ -301,8 +277,6 @@ def make_researcher_deep_node(
                 fetch_gateway = ToolGateway(conn, run_id)
                 _register_deep_tools(fetch_gateway, conn)
                 for pid in paper_ids:
-                    if os.environ.get("SURVEYFORGE_DEBUG_DEEP"):
-                        print(f"[deep-debug]   fetching pid={pid}")
                     try:
                         abstract = _fetch_abstract(fetch_gateway, pid)
                     except Exception as exc:
@@ -311,26 +285,12 @@ def make_researcher_deep_node(
                         # would trigger rollback and lose the audit. Pattern
                         # matches Wide's per-turn transaction lesson.
                         fetch_exc = exc
-                        if os.environ.get("SURVEYFORGE_DEBUG_DEEP"):
-                            print(f"[deep-debug]   pid={pid} FETCH EXCEPTION {type(exc).__name__}: {exc!r}")
                         break
-                    if os.environ.get("SURVEYFORGE_DEBUG_DEEP"):
-                        print(
-                            f"[deep-debug]   pid={pid} fetched "
-                            f"abstract_len={len(abstract) if abstract else 0}"
-                        )
                     if abstract is not None:
                         abstracts[pid] = abstract
             # Transaction has committed normally (or rolled back only if exit
             # raised — which the inner try/except prevents). tool_calls audit
             # rows for both successful and failed fetches are preserved.
-
-            if os.environ.get("SURVEYFORGE_DEBUG_DEEP"):
-                print(
-                    f"[deep-debug] section={section_id} fetch loop done: "
-                    f"abstracts_keys={list(abstracts.keys())} "
-                    f"fetch_exc={type(fetch_exc).__name__ if fetch_exc else None}"
-                )
 
             if fetch_exc is not None:
                 # Classify transport-level errors; programmer bugs (e.g.,
@@ -347,8 +307,6 @@ def make_researcher_deep_node(
                 # papers stay in queue too — caller may want to retry with a
                 # different mechanism (W3 pdf_reader). web: papers get cleaned
                 # at end as a special case (intentional W2 skip).
-                if os.environ.get("SURVEYFORGE_DEBUG_DEEP"):
-                    print(f"[deep-debug] section={section_id} SKIP — abstracts empty")
                 continue
 
 
@@ -361,12 +319,6 @@ def make_researcher_deep_node(
                 paper_ids=list(abstracts.keys()),
                 must_find_evidence=section.must_find_evidence,
             ) + f"\n\n### Available paper abstracts:\n\n{paper_text}"
-
-            if os.environ.get("SURVEYFORGE_DEBUG_DEEP"):
-                print(
-                    f"[deep-debug] section={section_id} entering structured_call "
-                    f"abstracts_len={len(abstracts)} user_message_chars={len(user_message)}"
-                )
 
             # Budget check (rough estimate: 4 chars per token)
             try:
@@ -399,18 +351,14 @@ def make_researcher_deep_node(
                     config=callback_config,  # type: ignore[arg-type]
                 )
                 output = ResearcherDeepOutput.model_validate(result_dict)
-            except (StructuredCallError, ValidationError) as exc:
+            except (StructuredCallError, ValidationError):
                 # LLM output failed JSON Schema or Pydantic validation — recoverable
-                if os.environ.get("SURVEYFORGE_DEBUG_DEEP"):
-                    print(f"[deep-debug] section={section_id} structured_call SCHEMA_INVALID: {type(exc).__name__}: {exc!r}")
                 last_error_category = SCHEMA_INVALID
                 continue
             except Exception as exc:
                 # Transport / provider errors (httpx.HTTPStatusError 429/5xx etc.)
                 # use classify_exception; unclassified exceptions PROPAGATE.
                 classified = classify_exception(exc)
-                if os.environ.get("SURVEYFORGE_DEBUG_DEEP"):
-                    print(f"[deep-debug] section={section_id} structured_call exception {type(exc).__name__} classified={classified.value if classified else None}: {exc!r}")
                 if classified is None:
                     raise  # don't silently swallow unknown errors
                 last_error_category = classified.value
