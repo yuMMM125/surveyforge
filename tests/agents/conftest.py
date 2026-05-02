@@ -16,4 +16,4 @@ def patch_planner_transaction(
     patch_agent_transaction: Callable[[str], None],
 ) -> None:
     """Backward-compat alias for the existing planner_unit tests."""
-    patch_agent_transaction("surveyforge.agents.planner")
+    patch_agent_transaction("litweave.agents.planner")

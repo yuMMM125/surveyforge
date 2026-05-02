@@ -13,13 +13,13 @@ import pytest
 from langchain_core.runnables import RunnableConfig
 from psycopg_pool import ConnectionPool
 
-from surveyforge.agents.planner import make_planner_node
-from surveyforge.llm.providers import ProviderName
-from surveyforge.llm.roles import AgentRole
-from surveyforge.llm.router import RoleBinding
-from surveyforge.prompts.loader import PromptRegistry
-from surveyforge.runtime.runs import RunManager
-from surveyforge.state import make_initial_state
+from litweave.agents.planner import make_planner_node
+from litweave.llm.providers import ProviderName
+from litweave.llm.roles import AgentRole
+from litweave.llm.router import RoleBinding
+from litweave.prompts.loader import PromptRegistry
+from litweave.runtime.runs import RunManager
+from litweave.state import make_initial_state
 
 # Common placeholder patterns that would slip past `os.environ.get(...)` and
 # trigger a real provider call. Skip the test when MODELS_API_KEY matches any of
@@ -56,12 +56,12 @@ def test_planner_live_produces_outline_for_rlhf_survey(
     # run created here and the planner node's stage update go through the same
     # Postgres instance.
     monkeypatch.setenv("LITWEAVE_DATABASE_URL", postgres_url)
-    from surveyforge.runtime.db import reset_pool, transaction
+    from litweave.runtime.db import reset_pool, transaction
     reset_pool()
 
     try:
         # Use RateLimitedRouter so the live test follows the production router path.
-        from surveyforge.llm.rate_limit import RateLimitConfig, RateLimitedRouter
+        from litweave.llm.rate_limit import RateLimitConfig, RateLimitedRouter
         router = RateLimitedRouter(
             bindings={
                 AgentRole.PLANNER: RoleBinding(

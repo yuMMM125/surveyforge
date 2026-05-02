@@ -1,6 +1,6 @@
 from unittest.mock import MagicMock, patch
 
-from surveyforge.llm.observability import (
+from litweave.llm.observability import (
     LangfuseSettings,
     get_callback_handler,
     is_enabled,
@@ -31,7 +31,7 @@ def test_get_callback_handler_returns_none_when_disabled(monkeypatch):
 
 
 def test_get_callback_handler_returns_handler_when_enabled(fake_env):
-    with patch("surveyforge.llm.observability.CallbackHandler") as MockH:
+    with patch("litweave.llm.observability.CallbackHandler") as MockH:
         MockH.return_value = MagicMock(name="handler")
         handler = get_callback_handler()
         assert handler is not None

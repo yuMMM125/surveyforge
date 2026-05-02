@@ -11,13 +11,13 @@ import psycopg
 import pytest
 from langchain_core.runnables import RunnableConfig
 
-from surveyforge.agents.planner import make_planner_node
-from surveyforge.llm.providers import ProviderName
-from surveyforge.llm.roles import AgentRole
-from surveyforge.llm.router import LLMRouter, RoleBinding
-from surveyforge.prompts.loader import PromptRegistry
-from surveyforge.runtime.runs import RunManager, RunStatus
-from surveyforge.state import make_initial_state
+from litweave.agents.planner import make_planner_node
+from litweave.llm.providers import ProviderName
+from litweave.llm.roles import AgentRole
+from litweave.llm.router import LLMRouter, RoleBinding
+from litweave.prompts.loader import PromptRegistry
+from litweave.runtime.runs import RunManager, RunStatus
+from litweave.state import make_initial_state
 
 CANNED_PLANNER_OUTPUT = {
     "topic": "Survey of RLHF",
@@ -63,7 +63,7 @@ def planner_node(monkeypatch: pytest.MonkeyPatch):  # type: ignore[no-untyped-de
     monkeypatch.setattr(router, "get_llm", MagicMock(return_value=mock_llm))
     # Mock structured_call to return our canned output
     monkeypatch.setattr(
-        "surveyforge.agents.planner.structured_call",
+        "litweave.agents.planner.structured_call",
         MagicMock(return_value=CANNED_PLANNER_OUTPUT),
     )
     registry = PromptRegistry()
@@ -147,7 +147,7 @@ def test_planner_node_invokes_structured_call_with_planner_output_schema(
     mock_llm = MagicMock()
     monkeypatch.setattr(router, "get_llm", MagicMock(return_value=mock_llm))
     monkeypatch.setattr(
-        "surveyforge.agents.planner.structured_call", fake_structured_call,
+        "litweave.agents.planner.structured_call", fake_structured_call,
     )
     node = make_planner_node(router, PromptRegistry())
 
@@ -181,7 +181,7 @@ def test_make_planner_node_accepts_rate_limited_router() -> None:
     alongside bare LLMRouter (used by these unit tests for speed). Without
     this, production agent code would silently bypass rate limiting and
     trip SJTU gateway 429 cascades."""
-    from surveyforge.llm.rate_limit import RateLimitConfig, RateLimitedRouter
+    from litweave.llm.rate_limit import RateLimitConfig, RateLimitedRouter
 
     router = RateLimitedRouter(
         bindings={
@@ -195,5 +195,5 @@ def test_make_planner_node_accepts_rate_limited_router() -> None:
     node = make_planner_node(router, registry)
     assert callable(node)
     # Bonus: verify the structural protocol holds at runtime
-    from surveyforge.llm.router import RouterProtocol
+    from litweave.llm.router import RouterProtocol
     assert isinstance(router, RouterProtocol)

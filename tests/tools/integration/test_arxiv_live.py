@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from surveyforge.tools import arxiv_search
+from litweave.tools import arxiv_search
 
 
 @pytest.mark.integration

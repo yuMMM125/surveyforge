@@ -1,9 +1,9 @@
 import pytest
 from langchain_openai import ChatOpenAI
 
-from surveyforge.llm.providers import ProviderName
-from surveyforge.llm.roles import AgentRole
-from surveyforge.llm.router import LLMRouter, RoleBinding
+from litweave.llm.providers import ProviderName
+from litweave.llm.roles import AgentRole
+from litweave.llm.router import LLMRouter, RoleBinding
 
 
 @pytest.fixture

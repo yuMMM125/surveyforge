@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 from langchain_core.messages import HumanMessage
 
-from surveyforge.llm.providers import ProviderName, build_chat_model
+from litweave.llm.providers import ProviderName, build_chat_model
 
 pytestmark = pytest.mark.integration
 

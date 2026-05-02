@@ -13,10 +13,10 @@ import psycopg
 import pytest
 import respx
 
-from surveyforge.llm.roles import AgentRole
-from surveyforge.runtime.runs import RunManager
-from surveyforge.runtime.tool_gateway import ToolGateway
-from surveyforge.tools import arxiv_lookup, arxiv_search, s2_lookup, web_search
+from litweave.llm.roles import AgentRole
+from litweave.runtime.runs import RunManager
+from litweave.runtime.tool_gateway import ToolGateway
+from litweave.tools import arxiv_lookup, arxiv_search, s2_lookup, web_search
 
 # ---- helpers ----
 
@@ -168,7 +168,7 @@ def test_arxiv_search_role_not_in_allowed_roles_raises(conn: psycopg.Connection,
     run_id = _make_run(conn)
     gw = ToolGateway(conn, run_id)
     arxiv_search.register(gw)
-    from surveyforge.runtime.tool_gateway import ToolRoleDenied
+    from litweave.runtime.tool_gateway import ToolRoleDenied
     with pytest.raises(ToolRoleDenied):
         gw.call(AgentRole.PLANNER, "arxiv_search", query="x")
 
@@ -274,7 +274,7 @@ def test_s2_lookup_retries_on_429_then_succeeds_on_200(respx_mock, monkeypatch):
     """First 429 (no Retry-After) → backoff 1.0s → second 200 succeeds."""
     recorded_sleeps: list[float] = []
     monkeypatch.setattr(
-        "surveyforge.tools.s2_lookup.time.sleep",
+        "litweave.tools.s2_lookup.time.sleep",
         lambda s: recorded_sleeps.append(s),
     )
     respx_mock.get(f"{s2_lookup.S2_API_BASE}/paper/arXiv:2401.12345").mock(
@@ -292,7 +292,7 @@ def test_s2_lookup_retries_use_retry_after_header_when_present(respx_mock, monke
     """`Retry-After: 7` overrides DEFAULT_BACKOFF_SECONDS[0]=1.0."""
     recorded_sleeps: list[float] = []
     monkeypatch.setattr(
-        "surveyforge.tools.s2_lookup.time.sleep",
+        "litweave.tools.s2_lookup.time.sleep",
         lambda s: recorded_sleeps.append(s),
     )
     respx_mock.get(f"{s2_lookup.S2_API_BASE}/paper/arXiv:2401.12345").mock(
@@ -315,7 +315,7 @@ def test_s2_lookup_exhausted_retries_raises_http_error(respx_mock, monkeypatch):
     """
     recorded_sleeps: list[float] = []
     monkeypatch.setattr(
-        "surveyforge.tools.s2_lookup.time.sleep",
+        "litweave.tools.s2_lookup.time.sleep",
         lambda s: recorded_sleeps.append(s),
     )
     respx_mock.get(f"{s2_lookup.S2_API_BASE}/paper/arXiv:2401.12345").mock(
@@ -336,7 +336,7 @@ def test_s2_lookup_exhausted_retries_through_gateway_records_provider_429(
 ):
     """All-429 scenario via ToolGateway: tool_calls row tagged provider_429."""
     monkeypatch.setattr(
-        "surveyforge.tools.s2_lookup.time.sleep",
+        "litweave.tools.s2_lookup.time.sleep",
         lambda s: None,
     )
     respx_mock.get(f"{s2_lookup.S2_API_BASE}/paper/arXiv:2401.12345").mock(
@@ -366,7 +366,7 @@ def test_s2_lookup_404_does_not_retry(respx_mock, monkeypatch):
     is a stable signal, not a transient failure)."""
     recorded_sleeps: list[float] = []
     monkeypatch.setattr(
-        "surveyforge.tools.s2_lookup.time.sleep",
+        "litweave.tools.s2_lookup.time.sleep",
         lambda s: recorded_sleeps.append(s),
     )
     respx_mock.get(f"{s2_lookup.S2_API_BASE}/paper/arXiv:9999.00000").mock(
@@ -383,7 +383,7 @@ def test_s2_lookup_500_does_not_retry(respx_mock, monkeypatch):
     provider_5xx for downstream routing."""
     recorded_sleeps: list[float] = []
     monkeypatch.setattr(
-        "surveyforge.tools.s2_lookup.time.sleep",
+        "litweave.tools.s2_lookup.time.sleep",
         lambda s: recorded_sleeps.append(s),
     )
     respx_mock.get(f"{s2_lookup.S2_API_BASE}/paper/arXiv:2401.12345").mock(
@@ -479,7 +479,7 @@ def test_arxiv_lookup_retries_on_429_then_succeeds(respx_mock, monkeypatch):
     """First 429 (no Retry-After) → backoff 1.0s → second 200 succeeds."""
     recorded_sleeps: list[float] = []
     monkeypatch.setattr(
-        "surveyforge.tools.arxiv_lookup.time.sleep",
+        "litweave.tools.arxiv_lookup.time.sleep",
         lambda s: recorded_sleeps.append(s),
     )
     respx_mock.get(arxiv_lookup.ARXIV_API_BASE).mock(
@@ -523,7 +523,7 @@ def test_arxiv_lookup_role_not_in_allowed_raises(conn: psycopg.Connection, respx
     run_id = _make_run(conn)
     gw = ToolGateway(conn, run_id)
     arxiv_lookup.register(gw)
-    from surveyforge.runtime.tool_gateway import ToolRoleDenied
+    from litweave.runtime.tool_gateway import ToolRoleDenied
     with pytest.raises(ToolRoleDenied):
         gw.call(AgentRole.RESEARCHER_WIDE, "arxiv_lookup", paper_id="arxiv:1234.5678")
 
@@ -702,7 +702,7 @@ def test_web_search_through_gateway_marks_result_untrusted(
 def test_web_search_api_key_not_in_input_hash(respx_mock, monkeypatch):
     """Sanity: SERPER_API_KEY value never participates in cache key (sanitize_args drops it)."""
     monkeypatch.setenv("SERPER_API_KEY", "test-key-not-real")
-    from surveyforge.runtime.tool_gateway import compute_input_hash
+    from litweave.runtime.tool_gateway import compute_input_hash
     h_clean = compute_input_hash({"query": "x", "num_results": 5})
     h_with_key = compute_input_hash({"query": "x", "num_results": 5, "api_key": "secret"})
     assert h_clean == h_with_key

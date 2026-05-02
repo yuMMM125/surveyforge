@@ -11,8 +11,8 @@ from unittest.mock import MagicMock
 import psycopg
 import pytest
 
-from surveyforge import cli
-from surveyforge.runtime.runs import RunManager
+from litweave import cli
+from litweave.runtime.runs import RunManager
 
 
 def _make_run(conn: psycopg.Connection, idempotency_key: str | None = None) -> str:
@@ -28,8 +28,8 @@ def _make_run(conn: psycopg.Connection, idempotency_key: str | None = None) -> s
 def test_cli_run_creates_run_and_invokes_graph(
     conn: psycopg.Connection, monkeypatch, patch_agent_transaction, capsys,
 ):
-    """`surveyforge run --topic X` creates a run + invokes graph + exits 0 + prints run_id."""
-    patch_agent_transaction("surveyforge.cli")
+    """`litweave run --topic X` creates a run + invokes graph + exits 0 + prints run_id."""
+    patch_agent_transaction("litweave.cli")
 
     # Mock build_graph to return a graph whose .invoke returns a fake state.
     fake_graph = MagicMock()
@@ -57,7 +57,7 @@ def test_cli_run_idempotency_conflict_returns_usage_error(
     conn: psycopg.Connection, monkeypatch, patch_agent_transaction, capsys,
 ):
     """Re-using an idempotency_key surfaces the existing run_id + exit 3."""
-    patch_agent_transaction("surveyforge.cli")
+    patch_agent_transaction("litweave.cli")
     existing_run_id = _make_run(conn, idempotency_key="dup-key")
 
     monkeypatch.setattr(cli, "build_graph", MagicMock())  # not invoked
@@ -73,7 +73,7 @@ def test_cli_run_idempotency_conflict_returns_usage_error(
 def test_cli_run_graph_invoke_raises_returns_failed(
     conn: psycopg.Connection, monkeypatch, patch_agent_transaction, capsys,
 ):
-    patch_agent_transaction("surveyforge.cli")
+    patch_agent_transaction("litweave.cli")
     fake_graph = MagicMock()
     fake_graph.invoke.side_effect = RuntimeError("simulated graph failure")
     monkeypatch.setattr(cli, "build_graph", MagicMock(return_value=fake_graph))
@@ -88,7 +88,7 @@ def test_cli_run_graph_invoke_raises_returns_failed(
 def test_cli_status_returns_run_metadata(
     conn: psycopg.Connection, patch_agent_transaction, capsys,
 ):
-    patch_agent_transaction("surveyforge.cli")
+    patch_agent_transaction("litweave.cli")
     run_id = _make_run(conn)
 
     rc = cli.main(["status", run_id])
@@ -102,7 +102,7 @@ def test_cli_status_returns_run_metadata(
 def test_cli_status_unknown_run_returns_usage_error(
     conn: psycopg.Connection, patch_agent_transaction, capsys,
 ):
-    patch_agent_transaction("surveyforge.cli")
+    patch_agent_transaction("litweave.cli")
     rc = cli.main(["status", "run_does_not_exist"])
     assert rc == cli.EXIT_USAGE
     assert "run not found" in capsys.readouterr().err

@@ -1,8 +1,8 @@
 """with_run_metadata returns Langfuse-compatible callback config dict."""
 from __future__ import annotations
 
-from surveyforge.llm.roles import AgentRole
-from surveyforge.runtime.observability import with_run_metadata
+from litweave.llm.roles import AgentRole
+from litweave.runtime.observability import with_run_metadata
 
 
 def test_basic_fields_present():

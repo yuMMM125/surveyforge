@@ -8,8 +8,8 @@ from __future__ import annotations
 import pytest
 from langchain_core.messages import HumanMessage
 
-from surveyforge.llm.providers import ProviderName, build_chat_model
-from surveyforge.llm.structured_output import structured_call
+from litweave.llm.providers import ProviderName, build_chat_model
+from litweave.llm.structured_output import structured_call
 
 pytestmark = pytest.mark.integration
 

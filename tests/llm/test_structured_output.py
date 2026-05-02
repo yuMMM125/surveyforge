@@ -3,7 +3,7 @@ from unittest.mock import MagicMock
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
-from surveyforge.llm.structured_output import (
+from litweave.llm.structured_output import (
     StructuredCallError,
     structured_call,
 )

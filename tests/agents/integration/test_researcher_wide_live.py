@@ -13,16 +13,16 @@ import pytest
 from langchain_core.runnables import RunnableConfig
 from psycopg_pool import ConnectionPool
 
-from surveyforge.agents.researcher_wide import make_researcher_wide_node
-from surveyforge.llm.providers import ProviderName
-from surveyforge.llm.rate_limit import RateLimitConfig, RateLimitedRouter
-from surveyforge.llm.roles import AgentRole
-from surveyforge.llm.router import RoleBinding
-from surveyforge.prompts.loader import PromptRegistry
-from surveyforge.runtime.budget import BudgetManager
-from surveyforge.runtime.runs import RunManager
-from surveyforge.schemas.planner import PlannerSection
-from surveyforge.state import make_initial_state
+from litweave.agents.researcher_wide import make_researcher_wide_node
+from litweave.llm.providers import ProviderName
+from litweave.llm.rate_limit import RateLimitConfig, RateLimitedRouter
+from litweave.llm.roles import AgentRole
+from litweave.llm.router import RoleBinding
+from litweave.prompts.loader import PromptRegistry
+from litweave.runtime.budget import BudgetManager
+from litweave.runtime.runs import RunManager
+from litweave.schemas.planner import PlannerSection
+from litweave.state import make_initial_state
 
 _PLACEHOLDER_KEY_PREFIXES = (
     "fake-", "fake_", "PASTE_YOUR_", "your-key", "test-", "dummy-", "placeholder",
@@ -46,7 +46,7 @@ def test_researcher_wide_live_finds_papers_for_long_context_topic(
         pytest.skip(f"MODELS_API_KEY appears to be a placeholder ({api_key[:12]}...)")
 
     monkeypatch.setenv("LITWEAVE_DATABASE_URL", postgres_url)
-    from surveyforge.runtime.db import reset_pool, transaction
+    from litweave.runtime.db import reset_pool, transaction
     reset_pool()
 
     try:

@@ -3,15 +3,15 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from surveyforge.llm.providers import ProviderName
-from surveyforge.llm.rate_limit import (
+from litweave.llm.providers import ProviderName
+from litweave.llm.rate_limit import (
     ProviderRateLimiter,
     RateLimitCallback,
     RateLimitConfig,
     RateLimitedRouter,
 )
-from surveyforge.llm.roles import AgentRole
-from surveyforge.llm.router import RoleBinding
+from litweave.llm.roles import AgentRole
+from litweave.llm.router import RoleBinding
 
 
 def test_token_bucket_allows_burst_within_capacity():
@@ -26,7 +26,7 @@ def test_token_bucket_allows_burst_within_capacity():
 def test_token_bucket_blocks_after_burst_exhausted(monkeypatch):
     sleeps: list[float] = []
     monkeypatch.setattr(
-        "surveyforge.llm.rate_limit.time.sleep", lambda s: sleeps.append(s)
+        "litweave.llm.rate_limit.time.sleep", lambda s: sleeps.append(s)
     )
     rl = ProviderRateLimiter(rpm=60, burst=2)
     rl.acquire()

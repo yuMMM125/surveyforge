@@ -12,15 +12,15 @@ import psycopg
 import pytest
 from langchain_core.runnables import RunnableConfig
 
-from surveyforge.agents.researcher_deep import make_researcher_deep_node
-from surveyforge.llm.providers import ProviderName
-from surveyforge.llm.roles import AgentRole
-from surveyforge.llm.router import LLMRouter, RoleBinding
-from surveyforge.prompts.loader import PromptRegistry
-from surveyforge.runtime.budget import BudgetManager
-from surveyforge.runtime.runs import RunManager, RunStatus
-from surveyforge.schemas.planner import PlannerSection
-from surveyforge.state import make_initial_state
+from litweave.agents.researcher_deep import make_researcher_deep_node
+from litweave.llm.providers import ProviderName
+from litweave.llm.roles import AgentRole
+from litweave.llm.router import LLMRouter, RoleBinding
+from litweave.prompts.loader import PromptRegistry
+from litweave.runtime.budget import BudgetManager
+from litweave.runtime.runs import RunManager, RunStatus
+from litweave.schemas.planner import PlannerSection
+from litweave.state import make_initial_state
 
 # ---- helpers ----
 
@@ -83,7 +83,7 @@ def deep_node_factory(monkeypatch: pytest.MonkeyPatch):
         return next_output
 
     monkeypatch.setattr(
-        "surveyforge.agents.researcher_deep.structured_call",
+        "litweave.agents.researcher_deep.structured_call",
         fake_structured_call,
     )
 
@@ -100,7 +100,7 @@ def deep_node_factory(monkeypatch: pytest.MonkeyPatch):
         return "default abstract for testing"
 
     monkeypatch.setattr(
-        "surveyforge.agents.researcher_deep._fetch_abstract",
+        "litweave.agents.researcher_deep._fetch_abstract",
         fake_fetch_abstract,
     )
 
@@ -157,7 +157,7 @@ def _canned_deep_output(
 def test_deep_node_persists_evidence_cards(
     conn: psycopg.Connection, deep_node_factory, patch_agent_transaction
 ):
-    patch_agent_transaction("surveyforge.agents.researcher_deep")
+    patch_agent_transaction("litweave.agents.researcher_deep")
     node, _calls, _ = deep_node_factory(_canned_deep_output(n_cards=2))
 
     run_id = _make_run(conn)
@@ -187,7 +187,7 @@ def test_deep_node_removes_processed_papers_from_queue(
 ):
     """Successfully-processed papers (section's structured_call returned valid output)
     leave the queue. Other papers stay for upstream retry (Issue 1 fix)."""
-    patch_agent_transaction("surveyforge.agents.researcher_deep")
+    patch_agent_transaction("litweave.agents.researcher_deep")
     node, _, _ = deep_node_factory(_canned_deep_output())
     run_id = _make_run(conn)
     state = _state_with_handoff("arxiv:1706.03741")
@@ -204,7 +204,7 @@ def test_deep_node_keeps_papers_in_queue_on_section_failure(
     papers MUST stay in deep_read_queue so upstream retry / orchestrator can
     re-enter (Issue 1 fix — previously cleared unconditionally)."""
     import httpx
-    patch_agent_transaction("surveyforge.agents.researcher_deep")
+    patch_agent_transaction("litweave.agents.researcher_deep")
     request = httpx.Request("POST", "https://example.com")
     response = httpx.Response(429, request=request)
     rate_limit_error = httpx.HTTPStatusError("rate limited", request=request, response=response)
@@ -228,7 +228,7 @@ def test_deep_node_strips_web_papers_from_queue(
     """web: papers leave the queue even though they're not "processed" — W2
     explicit skip (Issue 1 / Decision #3). Without this they'd cycle forever
     in any retry-loop wrapper."""
-    patch_agent_transaction("surveyforge.agents.researcher_deep")
+    patch_agent_transaction("litweave.agents.researcher_deep")
     node, _, _ = deep_node_factory(_canned_deep_output())
     run_id = _make_run(conn)
     state = _state_with_handoff("arxiv:1706.03741", "web:abc123")
@@ -244,7 +244,7 @@ def test_deep_node_skips_web_papers_in_w2(
     conn: psycopg.Connection, deep_node_factory, patch_agent_transaction
 ):
     """W2 has no pdf_reader / web re-fetch; web papers go to insufficient (here: just skipped)."""
-    patch_agent_transaction("surveyforge.agents.researcher_deep")
+    patch_agent_transaction("litweave.agents.researcher_deep")
     node, _calls, _ = deep_node_factory(_canned_deep_output())
     run_id = _make_run(conn)
     # Mix of arxiv + web papers
@@ -272,7 +272,7 @@ def test_deep_node_processes_wide_forced_exit_stubs(
     section_notes on forced exit. Deep's cross-reference must pick them up
     just like real CandidatePaper entries (the shape is identical apart from
     the `_forced_exit_stub: True` marker which Deep ignores)."""
-    patch_agent_transaction("surveyforge.agents.researcher_deep")
+    patch_agent_transaction("litweave.agents.researcher_deep")
     node, _, _ = deep_node_factory(_canned_deep_output(paper_ids=["arxiv:stub.1"]))
     run_id = _make_run(conn)
     state = make_initial_state(topic="x")
@@ -309,7 +309,7 @@ def test_deep_node_output_section_id_mismatch_rejects_whole_output(
 ):
     """If structured_call returns output.section_id != current section, reject all
     cards + record schema_invalid (Task 4 polish #2 lesson reused at Deep layer)."""
-    patch_agent_transaction("surveyforge.agents.researcher_deep")
+    patch_agent_transaction("litweave.agents.researcher_deep")
     # Output claims "S99" but we process "S1"
     bad_output = _canned_deep_output(section_id="S99", n_cards=2)
     node, _, _ = deep_node_factory(bad_output)
@@ -334,7 +334,7 @@ def test_deep_node_per_card_section_id_mismatch_drops_card_only(
 ):
     """A single bad card's section_id doesn't reject the whole output;
     only that card is dropped, others persist."""
-    patch_agent_transaction("surveyforge.agents.researcher_deep")
+    patch_agent_transaction("litweave.agents.researcher_deep")
     output = _canned_deep_output(section_id="S1", n_cards=2)
     output["evidence_cards"][1]["section_id"] = "S99"  # wrong on second card only
     node, _, _ = deep_node_factory(output)
@@ -363,7 +363,7 @@ def test_deep_node_rejects_output_with_hallucinated_card_paper_id(
     a hallucinated card paper_id rejects the WHOLE output as schema_invalid
     (stricter than the previous per-card drop). Architecture Decision #7c +
     Codex P1 subset hardening."""
-    patch_agent_transaction("surveyforge.agents.researcher_deep")
+    patch_agent_transaction("litweave.agents.researcher_deep")
     output = _canned_deep_output(section_id="S1", paper_ids=["arxiv:1706.03741"], n_cards=2)
     # Second card claims a paper_id NOT in section input
     output["evidence_cards"][1]["paper_id"] = "arxiv:hallucinated.1"
@@ -395,7 +395,7 @@ def test_deep_node_paper_ids_processed_must_cover_input_papers(
     of input papers (some papers silently unreported), reject the whole output
     as schema_invalid + ALL section papers stay in deep_read_queue. Without
     this check, unreported papers would silently disappear (Codex P1)."""
-    patch_agent_transaction("surveyforge.agents.researcher_deep")
+    patch_agent_transaction("litweave.agents.researcher_deep")
 
     # 2 input papers, but LLM only reports 1 in paper_ids_processed
     state = make_initial_state(topic="x")
@@ -452,7 +452,7 @@ def test_deep_node_processes_multiple_sections(
     """Two sections in section_notes → structured_call called twice (one per
     section); each section's evidence persists independently. Verifies the
     side_effect fixture pattern + per-section isolation."""
-    patch_agent_transaction("surveyforge.agents.researcher_deep")
+    patch_agent_transaction("litweave.agents.researcher_deep")
 
     # Two sections, each with one paper
     state = make_initial_state(topic="x")
@@ -510,7 +510,7 @@ def test_deep_node_provider_429_classified_correctly(
     """httpx.HTTPStatusError 429 from structured_call must be classified as
     `provider_429` (via classify_exception), not silently swallowed as schema_invalid."""
     import httpx
-    patch_agent_transaction("surveyforge.agents.researcher_deep")
+    patch_agent_transaction("litweave.agents.researcher_deep")
     request = httpx.Request("POST", "https://example.com")
     response = httpx.Response(429, request=request)
     rate_limit_error = httpx.HTTPStatusError("rate limited", request=request, response=response)
@@ -533,7 +533,7 @@ def test_deep_node_unclassified_exception_propagates(
     """An unclassified exception (e.g., bare RuntimeError) must propagate
     rather than be silently swallowed as schema_invalid. This prevents
     masking real bugs in the implementation."""
-    patch_agent_transaction("surveyforge.agents.researcher_deep")
+    patch_agent_transaction("litweave.agents.researcher_deep")
     node, _, _ = deep_node_factory([RuntimeError("totally unexpected")])
 
     run_id = _make_run(conn)
@@ -553,7 +553,7 @@ def test_deep_node_abstract_fetch_provider_error_classified(
     `provider_5xx` recorded; section's papers stay in deep_read_queue
     (retry-eligible)."""
     import httpx
-    patch_agent_transaction("surveyforge.agents.researcher_deep")
+    patch_agent_transaction("litweave.agents.researcher_deep")
 
     request = httpx.Request("GET", "https://api.semanticscholar.org/...")
     response = httpx.Response(503, request=request)
@@ -565,7 +565,7 @@ def test_deep_node_abstract_fetch_provider_error_classified(
     def raising_fetch(gateway, paper_id):
         raise fetch_error
     monkeypatch.setattr(
-        "surveyforge.agents.researcher_deep._fetch_abstract",
+        "litweave.agents.researcher_deep._fetch_abstract",
         raising_fetch,
     )
 
@@ -587,13 +587,13 @@ def test_deep_node_abstract_fetch_unclassified_exception_propagates(
     """ToolRoleDenied or programmer-bug exceptions during fetch propagate
     rather than being masked as 'no abstract' (Issue 2: prevent silent
     config-bug mask)."""
-    from surveyforge.runtime.tool_gateway import ToolRoleDenied
-    patch_agent_transaction("surveyforge.agents.researcher_deep")
+    from litweave.runtime.tool_gateway import ToolRoleDenied
+    patch_agent_transaction("litweave.agents.researcher_deep")
 
     def raising_fetch(gateway, paper_id):
         raise ToolRoleDenied("config bug — Deep should be allowed for s2_lookup")
     monkeypatch.setattr(
-        "surveyforge.agents.researcher_deep._fetch_abstract",
+        "litweave.agents.researcher_deep._fetch_abstract",
         raising_fetch,
     )
 
@@ -620,7 +620,7 @@ def test_deep_node_invalid_evidence_card_rejected_at_output_validation(
     Asserts: 0 evidence_items rows, error_category=schema_invalid, paper STAYS
     in deep_read_queue (retry-eligible — LLM may produce valid output next try).
     """
-    patch_agent_transaction("surveyforge.agents.researcher_deep")
+    patch_agent_transaction("litweave.agents.researcher_deep")
     output = _canned_deep_output(section_id="S1", paper_ids=["arxiv:1706.03741"], n_cards=2)
     # Card 1 has confidence=1.7 (out of [0, 1] range). ResearcherDeepOutput's
     # nested EvidenceCard validation rejects the WHOLE output — Card 0 doesn't
@@ -650,12 +650,12 @@ def test_deep_node_evidence_write_infrastructure_error_propagates(
     """Issue 3 fix: non-ValidationError exceptions during evidence_store_write
     (DB lost / ToolRoleDenied / UniqueViolation) PROPAGATE — silent drop
     would corrupt the audit trail. Only LLM-side validation errors are caught."""
-    from surveyforge.runtime.tool_gateway import ToolRoleDenied
-    patch_agent_transaction("surveyforge.agents.researcher_deep")
+    from litweave.runtime.tool_gateway import ToolRoleDenied
+    patch_agent_transaction("litweave.agents.researcher_deep")
 
     # Patch _register_deep_tools so its registered evidence_store_write impl raises
     # ToolRoleDenied — simulates a config-bug at write time.
-    import surveyforge.agents.researcher_deep as rd_mod
+    import litweave.agents.researcher_deep as rd_mod
     original_register = rd_mod._register_deep_tools
 
     def faulty_register(gateway, conn):
@@ -686,10 +686,10 @@ def test_deep_node_fetches_via_arxiv_when_s2_429_on_arxiv_paper(
     """
     import httpx
 
-    from surveyforge.agents.researcher_deep import make_researcher_deep_node
-    from surveyforge.tools import arxiv_lookup, s2_lookup
+    from litweave.agents.researcher_deep import make_researcher_deep_node
+    from litweave.tools import arxiv_lookup, s2_lookup
 
-    patch_agent_transaction("surveyforge.agents.researcher_deep")
+    patch_agent_transaction("litweave.agents.researcher_deep")
 
     for var in ("ALL_PROXY", "HTTP_PROXY", "HTTPS_PROXY",
                 "all_proxy", "http_proxy", "https_proxy"):
@@ -697,7 +697,7 @@ def test_deep_node_fetches_via_arxiv_when_s2_429_on_arxiv_paper(
 
     # Skip s2_lookup retry sleeps (deterministic test, no need to wait the
     # full 1+2+4 backoff sequence)
-    monkeypatch.setattr("surveyforge.tools.s2_lookup.time.sleep", lambda s: None)
+    monkeypatch.setattr("litweave.tools.s2_lookup.time.sleep", lambda s: None)
 
     # s2 returns 429 four times (1 initial + 3 retries) → exhausted, raises
     respx_mock.get(f"{s2_lookup.S2_API_BASE}/paper/arXiv:1706.03741").mock(
@@ -728,7 +728,7 @@ def test_deep_node_fetches_via_arxiv_when_s2_429_on_arxiv_paper(
     })
     monkeypatch.setattr(router, "get_llm", MagicMock(return_value=MagicMock()))
     monkeypatch.setattr(
-        "surveyforge.agents.researcher_deep.structured_call",
+        "litweave.agents.researcher_deep.structured_call",
         MagicMock(return_value={
             "section_id": "S1",
             "paper_ids_processed": ["arxiv:1706.03741"],
@@ -790,16 +790,16 @@ def test_deep_node_no_fallback_for_s2_papers_when_s2_429(
     """
     import httpx
 
-    from surveyforge.agents.researcher_deep import make_researcher_deep_node
-    from surveyforge.tools import s2_lookup
+    from litweave.agents.researcher_deep import make_researcher_deep_node
+    from litweave.tools import s2_lookup
 
-    patch_agent_transaction("surveyforge.agents.researcher_deep")
+    patch_agent_transaction("litweave.agents.researcher_deep")
 
     for var in ("ALL_PROXY", "HTTP_PROXY", "HTTPS_PROXY",
                 "all_proxy", "http_proxy", "https_proxy"):
         monkeypatch.delenv(var, raising=False)
 
-    monkeypatch.setattr("surveyforge.tools.s2_lookup.time.sleep", lambda s: None)
+    monkeypatch.setattr("litweave.tools.s2_lookup.time.sleep", lambda s: None)
 
     respx_mock.get(f"{s2_lookup.S2_API_BASE}/paper/abc123").mock(
         side_effect=[
@@ -817,7 +817,7 @@ def test_deep_node_no_fallback_for_s2_papers_when_s2_429(
     })
     monkeypatch.setattr(router, "get_llm", MagicMock(return_value=MagicMock()))
     monkeypatch.setattr(
-        "surveyforge.agents.researcher_deep.structured_call",
+        "litweave.agents.researcher_deep.structured_call",
         MagicMock(return_value=_canned_deep_output()),
     )
 
@@ -858,10 +858,10 @@ def test_deep_node_no_fallback_for_non_transient_s2_errors(
     """
     import httpx
 
-    from surveyforge.agents.researcher_deep import make_researcher_deep_node
-    from surveyforge.tools import s2_lookup
+    from litweave.agents.researcher_deep import make_researcher_deep_node
+    from litweave.tools import s2_lookup
 
-    patch_agent_transaction("surveyforge.agents.researcher_deep")
+    patch_agent_transaction("litweave.agents.researcher_deep")
 
     for var in ("ALL_PROXY", "HTTP_PROXY", "HTTPS_PROXY",
                 "all_proxy", "http_proxy", "https_proxy"):
@@ -879,7 +879,7 @@ def test_deep_node_no_fallback_for_non_transient_s2_errors(
     })
     monkeypatch.setattr(router, "get_llm", MagicMock(return_value=MagicMock()))
     monkeypatch.setattr(
-        "surveyforge.agents.researcher_deep.structured_call",
+        "litweave.agents.researcher_deep.structured_call",
         MagicMock(return_value=_canned_deep_output()),
     )
 
@@ -960,7 +960,7 @@ def _setup_3_paper_s2_429_arxiv_success(monkeypatch, respx_mock):
     """
     import httpx
 
-    from surveyforge.tools import arxiv_lookup, s2_lookup
+    from litweave.tools import arxiv_lookup, s2_lookup
 
     # Strip system proxy env vars — without this, httpx.Client construction
     # inside s2_lookup tries SOCKS5 transport (socksio not in dev deps).
@@ -969,8 +969,8 @@ def _setup_3_paper_s2_429_arxiv_success(monkeypatch, respx_mock):
         monkeypatch.delenv(var, raising=False)
 
     # Skip retry sleeps - 1+2+4 backoff x 3 papers = 21s otherwise.
-    monkeypatch.setattr("surveyforge.tools.s2_lookup.time.sleep", lambda s: None)
-    monkeypatch.setattr("surveyforge.tools.arxiv_lookup.time.sleep", lambda s: None)
+    monkeypatch.setattr("litweave.tools.s2_lookup.time.sleep", lambda s: None)
+    monkeypatch.setattr("litweave.tools.arxiv_lookup.time.sleep", lambda s: None)
 
     bare_ids = ["1234.5678", "2345.6789", "3456.7890"]
     abstracts = {
@@ -1011,7 +1011,7 @@ def test_deep_node_3_papers_s2_429_arxiv_fallback_persists_evidence_happy_path(
     loop + evidence_store_write integration all work correctly across multiple
     papers in a single section.
     """
-    patch_agent_transaction("surveyforge.agents.researcher_deep")
+    patch_agent_transaction("litweave.agents.researcher_deep")
     _setup_3_paper_s2_429_arxiv_success(monkeypatch, respx_mock)
 
     router = LLMRouter({
@@ -1021,7 +1021,7 @@ def test_deep_node_3_papers_s2_429_arxiv_fallback_persists_evidence_happy_path(
     })
     monkeypatch.setattr(router, "get_llm", MagicMock(return_value=MagicMock()))
     monkeypatch.setattr(
-        "surveyforge.agents.researcher_deep.structured_call",
+        "litweave.agents.researcher_deep.structured_call",
         MagicMock(return_value={
             "section_id": "S1",
             "paper_ids_processed": [
@@ -1096,7 +1096,7 @@ def test_deep_node_llm_provider_429_after_fallback_success_records_error_no_evid
     """
     import httpx
 
-    patch_agent_transaction("surveyforge.agents.researcher_deep")
+    patch_agent_transaction("litweave.agents.researcher_deep")
     _setup_3_paper_s2_429_arxiv_success(monkeypatch, respx_mock)
 
     router = LLMRouter({
@@ -1112,7 +1112,7 @@ def test_deep_node_llm_provider_429_after_fallback_success_records_error_no_evid
         response=httpx.Response(429),
     )
     monkeypatch.setattr(
-        "surveyforge.agents.researcher_deep.structured_call",
+        "litweave.agents.researcher_deep.structured_call",
         MagicMock(side_effect=llm_429),
     )
 
@@ -1171,7 +1171,7 @@ def test_deep_node_fetch_loop_iterates_each_paper_no_cache_dedup(
     has another explanation (LLM 429, real provider state, etc). If it fails,
     we've found a real Deep bug.
     """
-    patch_agent_transaction("surveyforge.agents.researcher_deep")
+    patch_agent_transaction("litweave.agents.researcher_deep")
     s2_routes, arxiv_routes = _setup_3_paper_s2_429_arxiv_success(monkeypatch, respx_mock)
 
     router = LLMRouter({
@@ -1184,7 +1184,7 @@ def test_deep_node_fetch_loop_iterates_each_paper_no_cache_dedup(
     # Empty evidence_cards is valid output as long as paper_ids_processed covers
     # all input papers (insufficient_evidence_paper_ids carries the explanation).
     monkeypatch.setattr(
-        "surveyforge.agents.researcher_deep.structured_call",
+        "litweave.agents.researcher_deep.structured_call",
         MagicMock(return_value={
             "section_id": "S1",
             "paper_ids_processed": [
@@ -1272,7 +1272,7 @@ def test_make_researcher_deep_node_returns_callable():
 
 
 def test_make_researcher_deep_node_accepts_rate_limited_router():
-    from surveyforge.llm.rate_limit import RateLimitConfig, RateLimitedRouter
+    from litweave.llm.rate_limit import RateLimitConfig, RateLimitedRouter
     router = RateLimitedRouter(
         bindings={
             AgentRole.RESEARCHER_DEEP: RoleBinding(
@@ -1297,8 +1297,8 @@ def test_deep_node_real_gateway_writes_evidence_items(
     impl (replaces Bundle 1b placeholder)."""
     import httpx
 
-    from surveyforge.agents.researcher_deep import make_researcher_deep_node
-    from surveyforge.tools import s2_lookup
+    from litweave.agents.researcher_deep import make_researcher_deep_node
+    from litweave.tools import s2_lookup
 
     # Strip system proxy env vars (ALL_PROXY etc.) — without this, httpx.Client
     # construction inside s2_lookup tries to set up a SOCKS5 transport (which
@@ -1309,7 +1309,7 @@ def test_deep_node_real_gateway_writes_evidence_items(
                       "all_proxy", "http_proxy", "https_proxy"):
         monkeypatch.delenv(proxy_var, raising=False)
 
-    patch_agent_transaction("surveyforge.agents.researcher_deep")
+    patch_agent_transaction("litweave.agents.researcher_deep")
 
     # Mock s2 API — Deep's pre-fetch uses s2_lookup
     respx_mock.get(f"{s2_lookup.S2_API_BASE}/paper/arXiv:1706.03741").mock(
@@ -1333,7 +1333,7 @@ def test_deep_node_real_gateway_writes_evidence_items(
     })
     monkeypatch.setattr(router, "get_llm", MagicMock(return_value=MagicMock()))
     monkeypatch.setattr(
-        "surveyforge.agents.researcher_deep.structured_call",
+        "litweave.agents.researcher_deep.structured_call",
         MagicMock(return_value={
             "section_id": "S1",
             "paper_ids_processed": ["arxiv:1706.03741"],
@@ -1391,10 +1391,10 @@ def test_deep_node_real_gateway_preserves_tool_calls_audit_on_503(
     tool_name=s2_lookup + error_category=provider_5xx."""
     import httpx
 
-    from surveyforge.agents.researcher_deep import make_researcher_deep_node
-    from surveyforge.tools import s2_lookup
+    from litweave.agents.researcher_deep import make_researcher_deep_node
+    from litweave.tools import s2_lookup
 
-    patch_agent_transaction("surveyforge.agents.researcher_deep")
+    patch_agent_transaction("litweave.agents.researcher_deep")
 
     # Strip proxy env (see other real-gateway tests)
     for var in ("ALL_PROXY", "HTTP_PROXY", "HTTPS_PROXY", "all_proxy", "http_proxy", "https_proxy"):
@@ -1412,7 +1412,7 @@ def test_deep_node_real_gateway_preserves_tool_calls_audit_on_503(
     })
     monkeypatch.setattr(router, "get_llm", MagicMock(return_value=MagicMock()))
     monkeypatch.setattr(
-        "surveyforge.agents.researcher_deep.structured_call",
+        "litweave.agents.researcher_deep.structured_call",
         MagicMock(return_value=_canned_deep_output()),
     )
 

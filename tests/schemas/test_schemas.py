@@ -11,9 +11,9 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from surveyforge.schemas.citations import Citation, EvidenceRef
-from surveyforge.schemas.planner import PlannerOutput, PlannerSection
-from surveyforge.schemas.research import (
+from litweave.schemas.citations import Citation, EvidenceRef
+from litweave.schemas.planner import PlannerOutput, PlannerSection
+from litweave.schemas.research import (
     CandidatePaper,
     EvidenceCard,
     ResearcherDeepOutput,

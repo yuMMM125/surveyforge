@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import pytest
 
-from surveyforge.runtime.trust import extract_untrusted, wrap_untrusted
+from litweave.runtime.trust import extract_untrusted, wrap_untrusted
 
 
 def test_wrap_produces_evidence_pack_with_required_attributes():

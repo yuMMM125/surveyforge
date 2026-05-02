@@ -1,6 +1,6 @@
 import pytest
 
-from surveyforge.llm.providers import (
+from litweave.llm.providers import (
     DEFAULT_MODEL_GATEWAY_URL,
     LEGACY_SJTU_MODEL_API_KEY_ENV,
     MODEL_API_KEY_ENV,

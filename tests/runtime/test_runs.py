@@ -4,7 +4,7 @@ from __future__ import annotations
 import psycopg
 import pytest
 
-from surveyforge.runtime.runs import IdempotencyConflict, RunManager, RunStatus
+from litweave.runtime.runs import IdempotencyConflict, RunManager, RunStatus
 
 
 def test_run_status_has_six_values():

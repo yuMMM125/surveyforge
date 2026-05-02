@@ -7,9 +7,9 @@ import psycopg
 import pytest
 from pydantic import ValidationError
 
-from surveyforge.llm.roles import AgentRole
-from surveyforge.runtime.evidence import EvidenceItem, EvidenceStore
-from surveyforge.runtime.runs import RunManager
+from litweave.llm.roles import AgentRole
+from litweave.runtime.evidence import EvidenceItem, EvidenceStore
+from litweave.runtime.runs import RunManager
 
 
 def _make_run(conn: psycopg.Connection) -> str:

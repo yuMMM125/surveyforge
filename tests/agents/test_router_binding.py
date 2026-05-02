@@ -3,10 +3,10 @@ from __future__ import annotations
 
 import pytest
 
-from surveyforge.llm.providers import ProviderName
-from surveyforge.llm.rate_limit import RateLimitConfig, RateLimitedRouter
-from surveyforge.llm.roles import AgentRole
-from surveyforge.llm.router import LLMRouter, RoleBinding
+from litweave.llm.providers import ProviderName
+from litweave.llm.rate_limit import RateLimitConfig, RateLimitedRouter
+from litweave.llm.roles import AgentRole
+from litweave.llm.router import LLMRouter, RoleBinding
 
 
 def _make_router() -> LLMRouter:

@@ -1,4 +1,4 @@
-from surveyforge.llm.roles import AgentRole
+from litweave.llm.roles import AgentRole
 
 
 def test_all_roles_defined():

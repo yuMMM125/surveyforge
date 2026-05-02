@@ -13,15 +13,15 @@ import pytest
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig
 
-from surveyforge.agents.researcher_wide import make_researcher_wide_node
-from surveyforge.llm.providers import ProviderName
-from surveyforge.llm.roles import AgentRole
-from surveyforge.llm.router import LLMRouter, RoleBinding
-from surveyforge.prompts.loader import PromptRegistry
-from surveyforge.runtime.budget import BudgetManager, BudgetSpec, OverflowFallback
-from surveyforge.runtime.runs import RunManager, RunStatus
-from surveyforge.schemas.planner import PlannerSection
-from surveyforge.state import make_initial_state
+from litweave.agents.researcher_wide import make_researcher_wide_node
+from litweave.llm.providers import ProviderName
+from litweave.llm.roles import AgentRole
+from litweave.llm.router import LLMRouter, RoleBinding
+from litweave.prompts.loader import PromptRegistry
+from litweave.runtime.budget import BudgetManager, BudgetSpec, OverflowFallback
+from litweave.runtime.runs import RunManager, RunStatus
+from litweave.schemas.planner import PlannerSection
+from litweave.state import make_initial_state
 
 # ---- helpers: scripted LLM responses ----
 
@@ -131,7 +131,7 @@ def wide_node_factory(monkeypatch: pytest.MonkeyPatch):
         gateway.call = _capture_call
 
     monkeypatch.setattr(
-        "surveyforge.agents.researcher_wide._register_wide_tools",
+        "litweave.agents.researcher_wide._register_wide_tools",
         fake_register_wide_tools,
     )
 
@@ -157,7 +157,7 @@ def wide_node_factory(monkeypatch: pytest.MonkeyPatch):
 def test_wide_node_submit_results_populates_section_notes(
     conn: psycopg.Connection, wide_node_factory: Any, patch_agent_transaction: Any,
 ) -> None:
-    patch_agent_transaction("surveyforge.agents.researcher_wide")
+    patch_agent_transaction("litweave.agents.researcher_wide")
     candidate_papers = [
         {"paper_id": "arxiv:2401.12345", "title": "Paper 1", "source": "arxiv",
          "why_relevant": "directly answers RQ1", "handoff_to_deep": False},
@@ -186,7 +186,7 @@ def test_wide_node_dispatches_tool_call_then_submits(
     conn: psycopg.Connection, wide_node_factory: Any, patch_agent_transaction: Any,
 ) -> None:
     """Two-turn ReAct: turn 1 calls arxiv_search, turn 2 calls submit_results."""
-    patch_agent_transaction("surveyforge.agents.researcher_wide")
+    patch_agent_transaction("litweave.agents.researcher_wide")
     scripted = [
         _ai_with_tool_call("arxiv_search", {"query": "RLHF", "max_results": 5}, tc_id="tc_1"),
         _ai_submit([
@@ -219,8 +219,8 @@ def test_wide_node_8_turn_cap_preserves_seen_paper_ids(
     cross-reference path), but deep_read_queue is bounded by
     MAX_HANDOFF_TO_DEEP_PER_SECTION to keep Deep within S2 rate limits.
     error_category=context_overflow must be recorded (non-terminal — run continues)."""
-    patch_agent_transaction("surveyforge.agents.researcher_wide")
-    from surveyforge.agents.researcher_wide import MAX_HANDOFF_TO_DEEP_PER_SECTION
+    patch_agent_transaction("litweave.agents.researcher_wide")
+    from litweave.agents.researcher_wide import MAX_HANDOFF_TO_DEEP_PER_SECTION
     scripted = [_ai_with_tool_call("arxiv_search", {"query": f"q{i}"}, tc_id=f"tc_{i}")
                 for i in range(8)]
     # Each of the 8 arxiv_search calls returns one unique paper
@@ -268,10 +268,10 @@ def test_wide_node_budget_exceeded_preserves_seen_paper_ids(
 ) -> None:
     """When BudgetManager.check raises, loop exits AND all seen paper_ids
     flow into deep_read_queue (per DoD: forced exit must preserve candidates)."""
-    patch_agent_transaction("surveyforge.agents.researcher_wide")
+    patch_agent_transaction("litweave.agents.researcher_wide")
     # Override Wide's budget to a tiny number so turn 2's check trips it
     # (use setitem, NOT setattr — BUDGET_PER_ROLE is a dict, not an object)
-    from surveyforge.runtime import budget as budget_mod
+    from litweave.runtime import budget as budget_mod
     monkeypatch.setitem(
         budget_mod.BUDGET_PER_ROLE,
         AgentRole.RESEARCHER_WIDE,
@@ -325,8 +325,8 @@ def test_wide_node_overflow_calls_note_error_category(
 ) -> None:
     """Forced exit (budget OR turn cap) must call RunManager.note_error_category
     so observability captures the event without failing the run."""
-    patch_agent_transaction("surveyforge.agents.researcher_wide")
-    from surveyforge.runtime import budget as budget_mod
+    patch_agent_transaction("litweave.agents.researcher_wide")
+    from litweave.runtime import budget as budget_mod
     monkeypatch.setitem(
         budget_mod.BUDGET_PER_ROLE,
         AgentRole.RESEARCHER_WIDE,
@@ -356,7 +356,7 @@ def test_wide_node_wraps_web_search_results_as_untrusted(
     conn: psycopg.Connection, wide_node_factory: Any, patch_agent_transaction: Any,
 ) -> None:
     """web_search.result_trust=untrusted_content -> ToolMessage content wrapped via trust.wrap_untrusted."""
-    patch_agent_transaction("surveyforge.agents.researcher_wide")
+    patch_agent_transaction("litweave.agents.researcher_wide")
 
     scripted = [
         _ai_with_tool_call("web_search", {"query": "untrusted"}, tc_id="tc_1"),
@@ -364,7 +364,7 @@ def test_wide_node_wraps_web_search_results_as_untrusted(
     ]
     node, _ = wide_node_factory(scripted)
 
-    import surveyforge.agents.researcher_wide as rw_mod
+    import litweave.agents.researcher_wide as rw_mod
     original_wrap = rw_mod.wrap_untrusted
     wrap_calls: list[dict[str, Any]] = []
 
@@ -395,7 +395,7 @@ def test_wide_node_processes_all_sections_serially(
     conn: psycopg.Connection, wide_node_factory: Any, patch_agent_transaction: Any,
 ) -> None:
     """Two sections in outline -> ReAct runs twice, each section gets its own notes."""
-    patch_agent_transaction("surveyforge.agents.researcher_wide")
+    patch_agent_transaction("litweave.agents.researcher_wide")
     scripted = [
         # Section 1: directly submit (with correct section_id)
         _ai_submit(
@@ -439,7 +439,7 @@ def test_wide_node_json_fallback_when_llm_emits_content_not_tool_call(
     """Defense: if LLM returns ResearcherWideOutput JSON in content (no tool_call),
     parse it as completion rather than treating as forced exit. Handles model-
     quality drift where LLM ignores the 'always use submit_results' instruction."""
-    patch_agent_transaction("surveyforge.agents.researcher_wide")
+    patch_agent_transaction("litweave.agents.researcher_wide")
 
     fallback_output = json.dumps({
         "section_id": "S1",
@@ -476,7 +476,7 @@ def test_wide_node_json_fallback_unparseable_content_treated_as_overflow(
 ) -> None:
     """If content is non-empty but unparseable as ResearcherWideOutput JSON,
     forced exit with context_overflow."""
-    patch_agent_transaction("surveyforge.agents.researcher_wide")
+    patch_agent_transaction("litweave.agents.researcher_wide")
     scripted = [AIMessage(
         content="I think we should use BERT for this task.",  # plain prose, not JSON
         tool_calls=[],
@@ -505,10 +505,10 @@ def test_wide_node_real_gateway_writes_tool_calls(
     gateway integration isn't accidentally bypassed by mocks."""
     import httpx
 
-    from surveyforge.agents.researcher_wide import make_researcher_wide_node
-    from surveyforge.tools import arxiv_search
+    from litweave.agents.researcher_wide import make_researcher_wide_node
+    from litweave.tools import arxiv_search
 
-    patch_agent_transaction("surveyforge.agents.researcher_wide")
+    patch_agent_transaction("litweave.agents.researcher_wide")
     monkeypatch.setenv("SERPER_API_KEY", "test-not-used")
 
     # Mock arxiv API HTTP response (used by the real arxiv_search wrapper)
@@ -588,7 +588,7 @@ def test_make_researcher_wide_node_returns_callable() -> None:
 
 def test_make_researcher_wide_node_accepts_rate_limited_router() -> None:
     """Same RouterProtocol satisfaction as Task 3 polish — production uses RateLimitedRouter."""
-    from surveyforge.llm.rate_limit import RateLimitConfig, RateLimitedRouter
+    from litweave.llm.rate_limit import RateLimitConfig, RateLimitedRouter
     router = RateLimitedRouter(
         bindings={
             AgentRole.RESEARCHER_WIDE: RoleBinding(
@@ -609,7 +609,7 @@ def test_submit_tool_name_matches_prompt_completion_tools() -> None:
     """Cross-check: agent's SUBMIT_TOOL_NAME constant must appear in the prompt's
     `completion_tools` front-matter field. If they drift, prompt + agent are
     referring to different tool names — silent contract break."""
-    from surveyforge.agents import researcher_wide as rw_mod
+    from litweave.agents import researcher_wide as rw_mod
     registry = PromptRegistry()
     template = registry.load(AgentRole.RESEARCHER_WIDE)
     assert rw_mod.SUBMIT_TOOL_NAME in template.completion_tools
@@ -624,7 +624,7 @@ def test_extract_paper_ids_raises_on_unknown_tool():
     be added to seen_paper_ids → deep_read_queue (paper_id loss bug)."""
     from unittest.mock import MagicMock
 
-    from surveyforge.agents.researcher_wide import _extract_paper_ids_from_tool_result
+    from litweave.agents.researcher_wide import _extract_paper_ids_from_tool_result
 
     fake_result = MagicMock()
     fake_result.output.model_dump.return_value = {"papers": [{"paper_id": "arxiv:1"}]}
@@ -642,7 +642,7 @@ def test_wide_node_submit_results_mismatch_continues_loop_then_caps(
     distinguish 'LLM has a contract bug' from 'LLM ran out of exploration turns'.
     Verifies (a) wrong-section candidates do NOT corrupt section_notes for the
     current section; (b) re-prompt mechanism works; (c) error_category precision."""
-    patch_agent_transaction("surveyforge.agents.researcher_wide")
+    patch_agent_transaction("litweave.agents.researcher_wide")
     bad_candidates = [
         {"paper_id": "arxiv:wrong.1", "title": "Wrong section paper", "source": "arxiv",
          "why_relevant": "should be ignored", "handoff_to_deep": True},
@@ -674,7 +674,7 @@ def test_wide_node_submit_results_mismatch_continues_loop_then_caps(
     # schema_invalid (Task 4 polish #3). Loose context_overflow OR schema_invalid
     # would mask whether the contract precision is intact.
     assert refreshed.error_category == "schema_invalid"
-    from surveyforge.runtime.runs import RunStatus
+    from litweave.runtime.runs import RunStatus
     assert refreshed.status == RunStatus.RUNNING  # non-terminal
 
 
@@ -690,8 +690,8 @@ def test_wide_forced_exit_handoff_caps_at_three_papers_per_section(
     hits 429s, and abandons section_notes. Bounding to 3 papers per section
     keeps the post-Wide queue tractable. Sorted for determinism — set ordering
     is not stable across Python invocations."""
-    patch_agent_transaction("surveyforge.agents.researcher_wide")
-    from surveyforge.agents.researcher_wide import MAX_HANDOFF_TO_DEEP_PER_SECTION
+    patch_agent_transaction("litweave.agents.researcher_wide")
+    from litweave.agents.researcher_wide import MAX_HANDOFF_TO_DEEP_PER_SECTION
 
     # 8 arxiv_search calls, each returning a non-overlapping batch so total
     # seen_paper_ids = 10 unique paper_ids (well above the cap of 3).
@@ -742,7 +742,7 @@ def test_wide_node_json_fallback_mismatch_treated_as_schema_invalid(
     """JSON fallback path: LLM emits valid-shape ResearcherWideOutput in plain
     content (no tool_calls), BUT section_id is wrong. No tool_call_id to feed
     back, so forced exit with schema_invalid (NOT context_overflow)."""
-    patch_agent_transaction("surveyforge.agents.researcher_wide")
+    patch_agent_transaction("litweave.agents.researcher_wide")
 
     mismatch_output = json.dumps({
         "section_id": "S2",  # wrong — current section is S1
@@ -789,8 +789,8 @@ def test_wide_normal_completion_handoff_caps_at_three_papers_per_section(
     section_notes recording remains UNCAPPED (full diagnostic set preserved);
     only the deep_read_queue handoff is bounded. Iteration order preserved
     (the first 3 LLM-supplied candidates land in deep_read_queue)."""
-    patch_agent_transaction("surveyforge.agents.researcher_wide")
-    from surveyforge.agents.researcher_wide import MAX_HANDOFF_TO_DEEP_PER_SECTION
+    patch_agent_transaction("litweave.agents.researcher_wide")
+    from litweave.agents.researcher_wide import MAX_HANDOFF_TO_DEEP_PER_SECTION
 
     # 5 candidate papers, all tagged handoff_to_deep=True. Iteration order is
     # what the LLM submitted (we control it here for deterministic assertion).

@@ -5,15 +5,15 @@ from pathlib import Path
 
 import pytest
 
-from surveyforge.llm.roles import AgentRole
-from surveyforge.prompts.loader import (
+from litweave.llm.roles import AgentRole
+from litweave.prompts.loader import (
     KNOWN_TOOLS,
     PromptContractError,
     PromptRegistry,
     PromptTemplate,
 )
-from surveyforge.schemas.planner import PlannerOutput
-from surveyforge.schemas.research import ResearcherDeepOutput, ResearcherWideOutput
+from litweave.schemas.planner import PlannerOutput
+from litweave.schemas.research import ResearcherDeepOutput, ResearcherWideOutput
 
 W2_ROLES = (AgentRole.PLANNER, AgentRole.RESEARCHER_WIDE, AgentRole.RESEARCHER_DEEP)
 
@@ -100,7 +100,7 @@ def test_planner_does_not_require_citation_rules(registry: PromptRegistry):
 
 def test_researcher_wide_not_in_citation_emitting_roles(registry: PromptRegistry):
     """Contract: Wide is triage-only, so the loader must NOT enforce Citation Rules on it."""
-    from surveyforge.prompts.loader import CITATION_EMITTING_ROLES
+    from litweave.prompts.loader import CITATION_EMITTING_ROLES
     assert AgentRole.RESEARCHER_WIDE not in CITATION_EMITTING_ROLES
     assert AgentRole.RESEARCHER_DEEP in CITATION_EMITTING_ROLES
 

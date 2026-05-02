@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 from psycopg_pool import ConnectionPool
 from testcontainers.postgres import PostgresContainer
 
-from surveyforge.runtime.db import init_db
+from litweave.runtime.db import init_db
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -97,7 +97,7 @@ def patch_agent_transaction(
 
     Usage:
         def test_x(patch_agent_transaction, conn):
-            patch_agent_transaction("surveyforge.agents.researcher_wide")
+            patch_agent_transaction("litweave.agents.researcher_wide")
             # node call now shares conn's transaction
     """
 

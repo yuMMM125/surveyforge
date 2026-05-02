@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import pytest
 
-from surveyforge.llm.roles import AgentRole
-from surveyforge.runtime.budget import (
+from litweave.llm.roles import AgentRole
+from litweave.runtime.budget import (
     BUDGET_PER_ROLE,
     BudgetExceeded,
     BudgetManager,

@@ -8,9 +8,9 @@ import psycopg
 import pytest
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from surveyforge.llm.roles import AgentRole
-from surveyforge.runtime.runs import RunManager
-from surveyforge.runtime.tool_gateway import (
+from litweave.llm.roles import AgentRole
+from litweave.runtime.runs import RunManager
+from litweave.runtime.tool_gateway import (
     TOOL_REGISTRY,
     ToolGateway,
     ToolNotRegistered,

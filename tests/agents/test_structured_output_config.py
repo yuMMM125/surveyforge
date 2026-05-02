@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 from langchain_core.messages import AIMessage, HumanMessage
 
-from surveyforge.llm.structured_output import structured_call
+from litweave.llm.structured_output import structured_call
 
 _SCHEMA: dict[str, Any] = {
     "type": "object",

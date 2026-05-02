@@ -24,18 +24,18 @@ import pytest
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
 
-from surveyforge.graph import build_graph
-from surveyforge.llm.providers import ProviderName
-from surveyforge.llm.roles import AgentRole
-from surveyforge.llm.router import LLMRouter, RoleBinding
-from surveyforge.prompts.loader import PromptRegistry
-from surveyforge.runtime.budget import BudgetManager
-from surveyforge.runtime.evidence import EvidenceItem, EvidenceStore
-from surveyforge.runtime.runs import RunManager
-from surveyforge.schemas.planner import PlannerSection
-from surveyforge.state import make_initial_state
-from surveyforge.synthesis.stub import make_synthesize_stub_node
-from surveyforge.writing.stub import make_write_stub_node
+from litweave.graph import build_graph
+from litweave.llm.providers import ProviderName
+from litweave.llm.roles import AgentRole
+from litweave.llm.router import LLMRouter, RoleBinding
+from litweave.prompts.loader import PromptRegistry
+from litweave.runtime.budget import BudgetManager
+from litweave.runtime.evidence import EvidenceItem, EvidenceStore
+from litweave.runtime.runs import RunManager
+from litweave.schemas.planner import PlannerSection
+from litweave.state import make_initial_state
+from litweave.synthesis.stub import make_synthesize_stub_node
+from litweave.writing.stub import make_write_stub_node
 
 
 def _make_run(conn: psycopg.Connection) -> str:
@@ -122,23 +122,23 @@ def _install_marker_nodes(
         }
 
     monkeypatch.setattr(
-        "surveyforge.graph.make_planner_node",
+        "litweave.graph.make_planner_node",
         lambda *a, **kw: _make_marker("planner", _planner_mut),
     )
     monkeypatch.setattr(
-        "surveyforge.graph.make_researcher_wide_node",
+        "litweave.graph.make_researcher_wide_node",
         lambda *a, **kw: _make_marker("researcher_wide", _wide_mut),
     )
     monkeypatch.setattr(
-        "surveyforge.graph.make_researcher_deep_node",
+        "litweave.graph.make_researcher_deep_node",
         lambda *a, **kw: _make_marker("researcher_deep", _deep_mut),
     )
     monkeypatch.setattr(
-        "surveyforge.graph.make_synthesize_stub_node",
+        "litweave.graph.make_synthesize_stub_node",
         lambda: _make_marker("synthesize", _synth_mut),
     )
     monkeypatch.setattr(
-        "surveyforge.graph.make_write_stub_node",
+        "litweave.graph.make_write_stub_node",
         lambda: _make_marker("write", _write_mut),
     )
 
@@ -185,7 +185,7 @@ def test_build_graph_raises_when_database_url_missing(monkeypatch):
     monkeypatch.delenv("LITWEAVE_DATABASE_URL", raising=False)
     # Reset module-level pool so a stale prior test doesn't short-circuit the
     # env-var check via the cached pool.
-    from surveyforge import graph as graph_mod
+    from litweave import graph as graph_mod
     graph_mod._reset_checkpointer_pool_for_tests()
 
     router = LLMRouter({
@@ -206,7 +206,7 @@ def test_build_graph_default_router_loads_llm_routing_yaml(monkeypatch):
 
     The actual file shipped in Plan #1 is `config/llm_routing.yaml`. A path
     typo (e.g., default falling back to `config/routing.yaml`) would only
-    surface at `surveyforge run` runtime, not during unit tests that always
+    surface at `litweave run` runtime, not during unit tests that always
     inject a `router=`. This test guards the default path explicitly so the
     typo is caught at PR time.
     """
@@ -219,11 +219,11 @@ def test_build_graph_default_router_loads_llm_routing_yaml(monkeypatch):
         return {}
 
     monkeypatch.setattr(
-        "surveyforge.graph.load_routing_yaml", _fake_load_routing_yaml,
+        "litweave.graph.load_routing_yaml", _fake_load_routing_yaml,
     )
     # Stub RateLimitedRouter so we don't need real LLM provider keys.
     monkeypatch.setattr(
-        "surveyforge.graph.RateLimitedRouter",
+        "litweave.graph.RateLimitedRouter",
         MagicMock(return_value=MagicMock()),
     )
 
@@ -265,7 +265,7 @@ def test_build_graph_default_postgres_checkpointer_round_trips_invoke(
     monkeypatch.setenv("LITWEAVE_DATABASE_URL", postgres_url)
     # Reset the module-level pool so this test gets a fresh pool against the
     # testcontainer URL (not a stale pool from a prior session/test).
-    from surveyforge import graph as graph_mod
+    from litweave import graph as graph_mod
     graph_mod._reset_checkpointer_pool_for_tests()
 
     # Marker nodes — no real LLMs, no DB-from-agents. This Postgres test does
@@ -380,7 +380,7 @@ def test_build_graph_invoke_runs_linear_flow_with_marker_nodes(monkeypatch):
 def test_synthesize_stub_dedupes_by_paper_id(
     conn: psycopg.Connection, patch_agent_transaction
 ):
-    patch_agent_transaction("surveyforge.synthesis.stub")
+    patch_agent_transaction("litweave.synthesis.stub")
     run_id = _make_run(conn)
     # Insert 3 evidence rows: 2 papers, 3 cards (paper p1 has 2 cards, paper p2 has 1)
     store = EvidenceStore(conn)
@@ -418,7 +418,7 @@ def test_synthesize_stub_handles_empty_evidence(
     conn: psycopg.Connection, patch_agent_transaction
 ):
     """No evidence_items rows -> `claims` is empty list, NOT KeyError."""
-    patch_agent_transaction("surveyforge.synthesis.stub")
+    patch_agent_transaction("litweave.synthesis.stub")
     run_id = _make_run(conn)
     state = make_initial_state(topic="x")
     state["outline"] = _outline()
@@ -437,7 +437,7 @@ def test_synthesize_stub_handles_empty_evidence(
 def test_write_stub_emits_section_draft_with_citations(
     conn: psycopg.Connection, patch_agent_transaction
 ):
-    patch_agent_transaction("surveyforge.writing.stub")
+    patch_agent_transaction("litweave.writing.stub")
     run_id = _make_run(conn)
     state = make_initial_state(topic="x")
     state["outline"] = _outline()
@@ -467,7 +467,7 @@ def test_write_stub_emits_section_draft_with_citations(
 def test_write_stub_handles_section_with_no_evidence(
     conn: psycopg.Connection, patch_agent_transaction
 ):
-    patch_agent_transaction("surveyforge.writing.stub")
+    patch_agent_transaction("litweave.writing.stub")
     run_id = _make_run(conn)
     state = make_initial_state(topic="x")
     state["outline"] = _outline()

@@ -2,9 +2,9 @@ from pathlib import Path
 
 import pytest
 
-from surveyforge.llm.providers import ProviderName
-from surveyforge.llm.roles import AgentRole
-from surveyforge.llm.router import LLMRouter, load_routing_yaml
+from litweave.llm.providers import ProviderName
+from litweave.llm.roles import AgentRole
+from litweave.llm.router import LLMRouter, load_routing_yaml
 
 
 def test_load_routing_yaml_returns_all_roles():

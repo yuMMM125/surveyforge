@@ -79,10 +79,10 @@ import pytest
 from langchain_core.runnables import RunnableConfig
 from psycopg_pool import ConnectionPool
 
-from surveyforge.graph import build_graph
-from surveyforge.runtime.runs import RunManager
-from surveyforge.schemas.planner import PlannerSection
-from surveyforge.state import make_initial_state
+from litweave.graph import build_graph
+from litweave.runtime.runs import RunManager
+from litweave.schemas.planner import PlannerSection
+from litweave.state import make_initial_state
 
 _PLACEHOLDER_KEY_PREFIXES = (
     "fake-", "fake_", "PASTE_YOUR_", "your-key", "test-", "dummy-", "placeholder",
@@ -126,8 +126,8 @@ def test_w2_bounded_smoke_single_section_e2e(
     # graph._make_postgres_checkpointer). Reset both so stale connections from
     # prior tests don't leak.
     monkeypatch.setenv("LITWEAVE_DATABASE_URL", postgres_url)
-    from surveyforge.graph import _reset_checkpointer_pool_for_tests
-    from surveyforge.runtime.db import reset_pool, transaction
+    from litweave.graph import _reset_checkpointer_pool_for_tests
+    from litweave.runtime.db import reset_pool, transaction
     reset_pool()
     _reset_checkpointer_pool_for_tests()
 
@@ -135,8 +135,8 @@ def test_w2_bounded_smoke_single_section_e2e(
     # Planner producing a tractable outline for the topic. The mock still
     # writes the planning stage transition so observability looks normal.
     def _planner_node_mock(state, config):  # type: ignore[no-untyped-def]
-        from surveyforge.runtime.db import transaction as _tx
-        from surveyforge.runtime.runs import RunManager as _RM
+        from litweave.runtime.db import transaction as _tx
+        from litweave.runtime.runs import RunManager as _RM
         run_id = config["configurable"]["thread_id"]
         with _tx() as conn:
             _RM(conn).update_stage(run_id, "planning")
@@ -160,7 +160,7 @@ def test_w2_bounded_smoke_single_section_e2e(
         return state
 
     monkeypatch.setattr(
-        "surveyforge.graph.make_planner_node",
+        "litweave.graph.make_planner_node",
         lambda *args, **kwargs: _planner_node_mock,
     )
 
@@ -184,8 +184,8 @@ def test_w2_bounded_smoke_single_section_e2e(
     }
 
     def _wide_node_mock(state, config):  # type: ignore[no-untyped-def]
-        from surveyforge.runtime.db import transaction as _tx
-        from surveyforge.runtime.runs import RunManager as _RM
+        from litweave.runtime.db import transaction as _tx
+        from litweave.runtime.runs import RunManager as _RM
         run_id = config["configurable"]["thread_id"]
         # Mirror real Wide's stage transition for observability parity.
         with _tx() as conn:
@@ -215,7 +215,7 @@ def test_w2_bounded_smoke_single_section_e2e(
         return state
 
     monkeypatch.setattr(
-        "surveyforge.graph.make_researcher_wide_node",
+        "litweave.graph.make_researcher_wide_node",
         lambda *args, **kwargs: _wide_node_mock,
     )
 

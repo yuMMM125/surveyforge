@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 from langchain_core.messages import HumanMessage
 
-from surveyforge.llm.providers import ProviderName, build_chat_model
+from litweave.llm.providers import ProviderName, build_chat_model
 
 pytestmark = pytest.mark.integration
 
@@ -41,7 +41,7 @@ def test_deepseek_tool_call_path(skip_if_no_key):
 
 def test_deepseek_traced_completion(skip_if_no_key):
     """Smoke test: when Langfuse is configured, callback is attached."""
-    from surveyforge.llm.observability import get_callback_handler
+    from litweave.llm.observability import get_callback_handler
 
     llm = build_chat_model(ProviderName.DEEPSEEK)
     handler = get_callback_handler()

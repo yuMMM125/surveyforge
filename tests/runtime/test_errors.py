@@ -6,7 +6,7 @@ import jsonschema
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from surveyforge.runtime.errors import ErrorCategory, classify_exception
+from litweave.runtime.errors import ErrorCategory, classify_exception
 
 
 def test_error_category_has_seven_values():

@@ -78,9 +78,9 @@ import pytest
 from langchain_core.runnables import RunnableConfig
 from psycopg_pool import ConnectionPool
 
-from surveyforge.graph import build_graph
-from surveyforge.runtime.runs import RunManager
-from surveyforge.state import make_initial_state
+from litweave.graph import build_graph
+from litweave.runtime.runs import RunManager
+from litweave.state import make_initial_state
 
 _PLACEHOLDER_KEY_PREFIXES = (
     "fake-", "fake_", "PASTE_YOUR_", "your-key", "test-", "dummy-", "placeholder",
@@ -127,15 +127,15 @@ def test_w2_end_to_end_multi_section_draft_for_rlhf(
     # need to land on the same Postgres. Reset both pools so neither inherits a
     # stale connection from a prior test session.
     monkeypatch.setenv("LITWEAVE_DATABASE_URL", postgres_url)
-    from surveyforge.graph import _reset_checkpointer_pool_for_tests
-    from surveyforge.runtime.db import reset_pool, transaction
+    from litweave.graph import _reset_checkpointer_pool_for_tests
+    from litweave.runtime.db import reset_pool, transaction
     reset_pool()
     _reset_checkpointer_pool_for_tests()
 
     try:
         # Build the graph with all defaults — real RateLimitedRouter from
         # config/llm_routing.yaml, real PromptRegistry, real BudgetManager,
-        # real PostgresSaver checkpointer. This is the EXACT path `surveyforge run`
+        # real PostgresSaver checkpointer. This is the EXACT path `litweave run`
         # uses; the only difference is we skip the argparse + RunManager.create
         # boilerplate and create the run manually for assertion convenience.
         with transaction() as conn:
