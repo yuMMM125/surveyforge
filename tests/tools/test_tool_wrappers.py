@@ -16,7 +16,7 @@ import respx
 from surveyforge.llm.roles import AgentRole
 from surveyforge.runtime.runs import RunManager
 from surveyforge.runtime.tool_gateway import ToolGateway
-from surveyforge.tools import arxiv_search, s2_lookup, web_search
+from surveyforge.tools import arxiv_lookup, arxiv_search, s2_lookup, web_search
 
 # ---- helpers ----
 
@@ -415,6 +415,152 @@ def test_s2_lookup_no_x_api_key_header_when_env_missing(respx_mock, monkeypatch)
     s2_lookup.lookup_paper(paper_id="arxiv:2401.12345")
     sent_request = route.calls.last.request
     assert "x-api-key" not in sent_request.headers
+
+
+# ---- arxiv_lookup (W2 polish 5: SS fallback for arxiv:* papers) ----
+
+ARXIV_LOOKUP_ATOM_FIXTURE = """<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <id>http://arxiv.org/abs/1234.5678v1</id>
+    <updated>2024-04-01T00:00:00Z</updated>
+    <published>2024-04-01T00:00:00Z</published>
+    <title>An Arxiv Lookup Test Paper</title>
+    <summary>This is the abstract returned by the arxiv id_list endpoint.</summary>
+    <author><name>Lookup Author</name></author>
+  </entry>
+</feed>
+"""
+
+ARXIV_LOOKUP_EMPTY_FEED = """<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+</feed>
+"""
+
+
+def test_arxiv_lookup_success_returns_abstract(respx_mock):
+    respx_mock.get(arxiv_lookup.ARXIV_API_BASE).mock(
+        return_value=httpx.Response(200, content=ARXIV_LOOKUP_ATOM_FIXTURE)
+    )
+    result = arxiv_lookup.lookup_paper(paper_id="arxiv:1234.5678")
+    assert result["paper"] is not None
+    assert result["paper"]["paper_id"] == "arxiv:1234.5678"
+    assert result["paper"]["title"] == "An Arxiv Lookup Test Paper"
+    assert "abstract returned by the arxiv id_list endpoint" in result["paper"]["abstract"]
+
+
+def test_arxiv_lookup_unknown_id_returns_paper_none(respx_mock):
+    """arxiv typically returns 200 with an empty feed (no <entry>) for unknown ids."""
+    respx_mock.get(arxiv_lookup.ARXIV_API_BASE).mock(
+        return_value=httpx.Response(200, content=ARXIV_LOOKUP_EMPTY_FEED)
+    )
+    result = arxiv_lookup.lookup_paper(paper_id="arxiv:9999.99999")
+    assert result == {"paper": None}
+
+
+def test_arxiv_lookup_404_returns_paper_none(respx_mock):
+    """Real HTTP 404 (rare for arxiv) treated for parity with s2_lookup 404 handling."""
+    respx_mock.get(arxiv_lookup.ARXIV_API_BASE).mock(
+        return_value=httpx.Response(404, text="not found")
+    )
+    result = arxiv_lookup.lookup_paper(paper_id="arxiv:9999.99999")
+    assert result == {"paper": None}
+
+
+def test_arxiv_lookup_500_propagates(respx_mock):
+    respx_mock.get(arxiv_lookup.ARXIV_API_BASE).mock(
+        return_value=httpx.Response(500, text="upstream broken")
+    )
+    with pytest.raises(httpx.HTTPStatusError):
+        arxiv_lookup.lookup_paper(paper_id="arxiv:1234.5678")
+
+
+def test_arxiv_lookup_retries_on_429_then_succeeds(respx_mock, monkeypatch):
+    """First 429 (no Retry-After) → backoff 1.0s → second 200 succeeds."""
+    recorded_sleeps: list[float] = []
+    monkeypatch.setattr(
+        "surveyforge.tools.arxiv_lookup.time.sleep",
+        lambda s: recorded_sleeps.append(s),
+    )
+    respx_mock.get(arxiv_lookup.ARXIV_API_BASE).mock(
+        side_effect=[
+            httpx.Response(429),
+            httpx.Response(200, content=ARXIV_LOOKUP_ATOM_FIXTURE),
+        ]
+    )
+    result = arxiv_lookup.lookup_paper(paper_id="arxiv:1234.5678")
+    assert result["paper"] is not None
+    assert result["paper"]["title"] == "An Arxiv Lookup Test Paper"
+    assert recorded_sleeps == [1.0]
+
+
+def test_arxiv_lookup_through_gateway_logs_tool_call(conn: psycopg.Connection, respx_mock):
+    """End-to-end: register wrapper with gateway, call as Deep, verify tool_calls row."""
+    respx_mock.get(arxiv_lookup.ARXIV_API_BASE).mock(
+        return_value=httpx.Response(200, content=ARXIV_LOOKUP_ATOM_FIXTURE)
+    )
+    run_id = _make_run(conn)
+    gw = ToolGateway(conn, run_id)
+    arxiv_lookup.register(gw)
+    res = gw.call(AgentRole.RESEARCHER_DEEP, "arxiv_lookup", paper_id="arxiv:1234.5678")
+    assert res.cache_hit is False
+    assert res.result_trust == "trusted_internal"
+    assert res.output.paper is not None
+    assert res.output.paper.title == "An Arxiv Lookup Test Paper"
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT tool_name, agent_role, cache_hit, result_trust "
+            "FROM tool_calls WHERE run_id = %s",
+            (run_id,),
+        )
+        row = cur.fetchone()
+    assert row == ("arxiv_lookup", "researcher_deep", False, "trusted_internal")
+
+
+def test_arxiv_lookup_role_not_in_allowed_raises(conn: psycopg.Connection, respx_mock):
+    """arxiv_lookup is Deep-only — Wide / Planner not in allowed_roles."""
+    run_id = _make_run(conn)
+    gw = ToolGateway(conn, run_id)
+    arxiv_lookup.register(gw)
+    from surveyforge.runtime.tool_gateway import ToolRoleDenied
+    with pytest.raises(ToolRoleDenied):
+        gw.call(AgentRole.RESEARCHER_WIDE, "arxiv_lookup", paper_id="arxiv:1234.5678")
+
+
+def test_arxiv_lookup_paper_id_only_accepts_arxiv_prefix(respx_mock):
+    """Non-arxiv prefixes rejected at input validation — arxiv API doesn't index s2/web."""
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        arxiv_lookup.lookup_paper(paper_id="s2:abc123")
+    with pytest.raises(ValidationError):
+        arxiv_lookup.lookup_paper(paper_id="web:abc123")
+    with pytest.raises(ValidationError):
+        arxiv_lookup.lookup_paper(paper_id="1234.5678")  # missing prefix
+
+
+def test_arxiv_lookup_handles_missing_summary_in_atom(respx_mock):
+    """Atom feed with `<entry>` but no `<summary>` → paper.abstract is None.
+
+    Documented choice: distinguish 'no abstract present in feed' (None) from
+    'lookup failed' (paper=None). A None abstract still indicates the paper
+    exists; the caller can decide whether to skip or surface the title.
+    """
+    feed_no_summary = """<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <id>http://arxiv.org/abs/1234.5678v1</id>
+    <title>Title But No Abstract</title>
+  </entry>
+</feed>
+"""
+    respx_mock.get(arxiv_lookup.ARXIV_API_BASE).mock(
+        return_value=httpx.Response(200, content=feed_no_summary)
+    )
+    result = arxiv_lookup.lookup_paper(paper_id="arxiv:1234.5678")
+    assert result["paper"] is not None
+    assert result["paper"]["title"] == "Title But No Abstract"
+    assert result["paper"]["abstract"] is None
 
 
 # ---- web_search ----

@@ -5,6 +5,6 @@ Each wrapper exports a `register(gateway: ToolGateway)` function. Graph init
 gateway, replacing the placeholder `_OpaqueArgs`/`_OpaqueOutput` policies in
 `runtime.tool_gateway.TOOL_REGISTRY`.
 """
-from surveyforge.tools import arxiv_search, s2_lookup, web_search
+from surveyforge.tools import arxiv_lookup, arxiv_search, s2_lookup, web_search
 
-__all__ = ("arxiv_search", "s2_lookup", "web_search")
+__all__ = ("arxiv_lookup", "arxiv_search", "s2_lookup", "web_search")
