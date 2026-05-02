@@ -217,10 +217,10 @@ def test_wide_node_8_turn_cap_preserves_seen_paper_ids(
     """LLM calls arxiv_search 8 times in a row without submit_results -> cap triggers.
     Per DoD: stubs for ALL seen paper_ids must appear in section_notes (Deep's
     cross-reference path), but deep_read_queue is bounded by
-    MAX_FORCED_EXIT_HANDOFF_PER_SECTION to keep Deep within S2 rate limits.
+    MAX_HANDOFF_TO_DEEP_PER_SECTION to keep Deep within S2 rate limits.
     error_category=context_overflow must be recorded (non-terminal — run continues)."""
     patch_agent_transaction("surveyforge.agents.researcher_wide")
-    from surveyforge.agents.researcher_wide import MAX_FORCED_EXIT_HANDOFF_PER_SECTION
+    from surveyforge.agents.researcher_wide import MAX_HANDOFF_TO_DEEP_PER_SECTION
     scripted = [_ai_with_tool_call("arxiv_search", {"query": f"q{i}"}, tc_id=f"tc_{i}")
                 for i in range(8)]
     # Each of the 8 arxiv_search calls returns one unique paper
@@ -250,9 +250,9 @@ def test_wide_node_8_turn_cap_preserves_seen_paper_ids(
     assert len(stubs) == 8  # one stub per seen paper (full set preserved for diagnostics)
     assert all(s["_forced_exit_stub"] is True for s in stubs)
     assert {s["paper_id"] for s in stubs} == {f"arxiv:2401.0000{i}" for i in range(8)}
-    # deep_read_queue is CAPPED at MAX_FORCED_EXIT_HANDOFF_PER_SECTION (NOT all 8)
+    # deep_read_queue is CAPPED at MAX_HANDOFF_TO_DEEP_PER_SECTION (NOT all 8)
     # to keep Deep within S2 rate limits (Task 7 polish, 2026-05-02).
-    assert len(result["deep_read_queue"]) == MAX_FORCED_EXIT_HANDOFF_PER_SECTION
+    assert len(result["deep_read_queue"]) == MAX_HANDOFF_TO_DEEP_PER_SECTION
     # error_category recorded, status unchanged
     rm = RunManager(conn)
     refreshed = rm.get(run_id)
@@ -682,7 +682,7 @@ def test_wide_forced_exit_handoff_caps_at_three_papers_per_section(
     conn: psycopg.Connection, wide_node_factory: Any, patch_agent_transaction: Any,
 ) -> None:
     """Forced-exit (8-turn cap) with > 3 candidate paper_ids must NOT dump all of
-    them into deep_read_queue. Cap at MAX_FORCED_EXIT_HANDOFF_PER_SECTION (=3) to
+    them into deep_read_queue. Cap at MAX_HANDOFF_TO_DEEP_PER_SECTION (=3) to
     keep Deep within Semantic Scholar's effective per-second throughput.
 
     Without this cap, a broad-topic forced-exit (the empirical ~30 candidates per
@@ -691,7 +691,7 @@ def test_wide_forced_exit_handoff_caps_at_three_papers_per_section(
     keeps the post-Wide queue tractable. Sorted for determinism — set ordering
     is not stable across Python invocations."""
     patch_agent_transaction("surveyforge.agents.researcher_wide")
-    from surveyforge.agents.researcher_wide import MAX_FORCED_EXIT_HANDOFF_PER_SECTION
+    from surveyforge.agents.researcher_wide import MAX_HANDOFF_TO_DEEP_PER_SECTION
 
     # 8 arxiv_search calls, each returning a non-overlapping batch so total
     # seen_paper_ids = 10 unique paper_ids (well above the cap of 3).
@@ -725,14 +725,14 @@ def test_wide_forced_exit_handoff_caps_at_three_papers_per_section(
     assert {s["paper_id"] for s in stubs} == set(paper_ids_returned)
 
     # Cap enforced: deep_read_queue has EXACTLY 3 entries (NOT all 10)
-    assert len(result["deep_read_queue"]) == MAX_FORCED_EXIT_HANDOFF_PER_SECTION
-    assert MAX_FORCED_EXIT_HANDOFF_PER_SECTION == 3, (
+    assert len(result["deep_read_queue"]) == MAX_HANDOFF_TO_DEEP_PER_SECTION
+    assert MAX_HANDOFF_TO_DEEP_PER_SECTION == 3, (
         "test scaffolding assumes cap=3; update assertions if cap changes"
     )
 
     # Determinism: the 3 entries are the first 3 of sorted(seen_paper_ids).
     # Sort matters because set iteration order is not stable across runs.
-    expected = sorted(paper_ids_returned)[:MAX_FORCED_EXIT_HANDOFF_PER_SECTION]
+    expected = sorted(paper_ids_returned)[:MAX_HANDOFF_TO_DEEP_PER_SECTION]
     assert result["deep_read_queue"] == expected
 
 
@@ -774,3 +774,51 @@ def test_wide_node_json_fallback_mismatch_treated_as_schema_invalid(
     # Forced exit, schema_invalid (parsed but contract violation, not budget overflow)
     rm = RunManager(conn)
     assert rm.get(run_id).error_category == "schema_invalid"
+
+
+def test_wide_normal_completion_handoff_caps_at_three_papers_per_section(
+    conn: psycopg.Connection, wide_node_factory: Any, patch_agent_transaction: Any,
+) -> None:
+    """Normal completion (LLM emits successful submit_results) with > 3 candidates
+    all flagged handoff_to_deep=True must NOT dump every paper_id into
+    deep_read_queue. The MAX_HANDOFF_TO_DEEP_PER_SECTION cap (=3) applies to
+    BOTH forced-exit AND normal-completion paths — without this, a verbose model
+    that picks 20 candidates per section would defeat the bounded-smoke design
+    (Task 7 polish 2, 2026-05-02).
+
+    section_notes recording remains UNCAPPED (full diagnostic set preserved);
+    only the deep_read_queue handoff is bounded. Iteration order preserved
+    (the first 3 LLM-supplied candidates land in deep_read_queue)."""
+    patch_agent_transaction("surveyforge.agents.researcher_wide")
+    from surveyforge.agents.researcher_wide import MAX_HANDOFF_TO_DEEP_PER_SECTION
+
+    # 5 candidate papers, all tagged handoff_to_deep=True. Iteration order is
+    # what the LLM submitted (we control it here for deterministic assertion).
+    candidate_papers = [
+        {"paper_id": f"arxiv:2401.{i:05d}", "title": f"P{i}", "source": "arxiv",
+         "why_relevant": "x", "handoff_to_deep": True}
+        for i in range(5)
+    ]
+    scripted = [_ai_submit(candidate_papers)]
+    node, _ = wide_node_factory(scripted)
+
+    run_id = _make_run(conn)
+    state = make_initial_state(topic="x")
+    state["outline"] = _outline_one_section()
+    config: RunnableConfig = {"configurable": {"thread_id": run_id}}
+
+    result = node(state, config)
+
+    # section_notes recording is UNCAPPED — all 5 candidates land in S1's notes
+    notes = result["section_notes"]["S1"]
+    assert len(notes) == 5
+    assert {n["paper_id"] for n in notes} == {f"arxiv:2401.{i:05d}" for i in range(5)}
+
+    # deep_read_queue is CAPPED at 3 (NOT all 5)
+    assert len(result["deep_read_queue"]) == MAX_HANDOFF_TO_DEEP_PER_SECTION
+    assert MAX_HANDOFF_TO_DEEP_PER_SECTION == 3, (
+        "test scaffolding assumes cap=3; update assertions if cap changes"
+    )
+
+    # Iteration order preserved: first 3 candidates land in the queue
+    assert result["deep_read_queue"] == [f"arxiv:2401.{i:05d}" for i in range(3)]

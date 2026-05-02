@@ -13,15 +13,31 @@ Why this design (Task 7 polish, 2026-05-02):
   exposes Wide forced-exit + S2 rate limit + model drift even on a single
   run. Real W2 spec deliverable ("单章草稿能跑通") is satisfied by a single
   section being drafted end-to-end with real evidence.
-- Wide forced-exit handoff is now capped at 3 papers/section (per
-  `MAX_FORCED_EXIT_HANDOFF_PER_SECTION` in researcher_wide.py), so even when
-  Wide forced-exits, Deep gets a bounded queue and won't get S2-throttled.
+- Wide handoff is now capped at 3 papers/section on BOTH forced-exit AND
+  normal-completion paths (per `MAX_HANDOFF_TO_DEEP_PER_SECTION` in
+  researcher_wide.py), so Deep gets a bounded queue and won't get
+  S2-throttled regardless of which exit shape Wide takes.
 
 Pre-reqs (same as test_section_draft_live.py): SJTU_MODELS_API_KEY real key,
 Docker daemon up for testcontainer, network to SJTU/arxiv/S2 endpoints.
 SERPER_API_KEY soft prereq (Wide may pick web_search; missing tolerated).
 
 Expected wall time: 60-180s. If > 300s, the test fails (something is wrong).
+
+Asserts (in order, all must pass):
+  (a) outline has exactly 1 section (mocked Planner)
+  (b) section_drafts has key "S1" and is non-empty (Writer stub produced
+      a draft for the single section)
+  (c) section_notes["S1"] is non-empty (Wide's persistent output — survives
+      Deep's queue-consumption semantics; deep_read_queue itself may be []
+      after Deep finishes processing every shortlisted paper)
+  (d) tool_calls table has >= 1 row each for arxiv_search (Wide called
+      arxiv successfully), s2_lookup (Deep abstract pre-fetch), and
+      evidence_store_write (Deep persisted >= 1 EvidenceCard via the real
+      gateway — see researcher_deep.py ~line 341)
+  (e) evidence_items table has >= 1 row (sanity — same persisted state as
+      the evidence_store_write tool_calls rows)
+  (f) wall time < 300s hard cap; warn at > 180s (soft)
 """
 from __future__ import annotations
 
@@ -192,6 +208,17 @@ def test_w2_bounded_smoke_single_section_e2e(
             print(f"[w2-bounded] section_draft {sid} marker_count={len(markers)} first3={markers[:3]}")
 
         # --- assertions ---
+        #
+        # NOTE on "persistent state" framing: do NOT assert on
+        # `deep_read_queue` length — `researcher_deep.py` rebuilds
+        # `state["deep_read_queue"]` with every successfully-processed paper_id
+        # REMOVED (see researcher_deep.py:360-368). On the success path,
+        # `deep_read_queue` may be `[]` (everything got processed), so a
+        # `>= 1` assertion would contradict Deep's queue-consumption semantics
+        # and fail on the happy path. Instead we assert on persistent state:
+        # `section_notes` (Wide's output, never consumed) + `tool_calls` rows
+        # (audit trail, never deleted) + `evidence_items` rows (Deep's
+        # persisted output).
 
         # (a) outline has exactly 1 section (Planner was mocked)
         outline = result.get("outline", [])
@@ -200,27 +227,43 @@ def test_w2_bounded_smoke_single_section_e2e(
         )
         assert outline[0]["section_id"] == "S1"
 
-        # (b) deep_read_queue: Wide produced some output (>= 1) AND the cap
-        # (MAX_FORCED_EXIT_HANDOFF_PER_SECTION = 3) wasn't violated. With a
-        # single section, even forced-exit yields at most 3 entries.
-        from surveyforge.agents.researcher_wide import (
-            MAX_FORCED_EXIT_HANDOFF_PER_SECTION,
+        # (b) section_drafts has key "S1" and is non-empty (Writer stub
+        # produced a draft for the single section)
+        assert "S1" in section_drafts, (
+            f"section_drafts missing S1; got {sorted(section_drafts.keys())}"
         )
-        assert len(deep_queue) >= 1, (
-            f"deep_read_queue empty — Wide produced no output for the section. "
+        assert section_drafts["S1"], "section_drafts[S1] is empty/falsy"
+
+        # (c) section_notes["S1"] is non-empty — this is Wide's PERSISTENT
+        # output (survives Deep's queue-consumption semantics, unlike
+        # deep_read_queue itself). Each entry is a CandidatePaper-shaped dict
+        # OR a forced-exit stub.
+        assert "S1" in section_notes, (
+            f"section_notes missing S1; got {sorted(section_notes.keys())}"
+        )
+        assert len(section_notes["S1"]) >= 1, (
+            f"section_notes[S1] is empty — Wide produced no candidates. "
             f"section_notes={section_notes}"
         )
-        assert len(deep_queue) <= MAX_FORCED_EXIT_HANDOFF_PER_SECTION + 5, (
-            # Allow some slack: normal completion can submit up to N candidates.
-            # The +5 is a generous upper bound; if Wide submits more than 8
-            # candidates for a single section the prompt has changed in a
-            # surprising way and the test should surface it.
-            f"deep_read_queue unexpectedly large: {len(deep_queue)} "
-            f"(forced-exit cap is {MAX_FORCED_EXIT_HANDOFF_PER_SECTION}); "
-            f"check Wide's candidate-submission behavior"
+
+        # (d) tool_calls has rows for the expected W2 critical-path tools:
+        # arxiv_search (Wide engaged arxiv), s2_lookup (Deep abstract pre-fetch),
+        # AND evidence_store_write (Deep persisted >= 1 EvidenceCard via the
+        # real evidence_store_write impl wired in Task 5; see
+        # researcher_deep.py:341 `write_gateway.call(..., "evidence_store_write", ...)`).
+        # web_search is allowed-but-optional (Wide may pick it).
+        tools_called = {row[0] for row in tool_rows}
+        expected_tools = {"arxiv_search", "s2_lookup", "evidence_store_write"}
+        missing_tools = expected_tools - tools_called
+        assert not missing_tools, (
+            f"missing expected tool_calls {missing_tools}; got {tools_called}. "
+            f"arxiv_search=Wide search, s2_lookup=Deep abstract pre-fetch, "
+            f"evidence_store_write=Deep evidence persistence — all 3 are "
+            f"required for the W2 happy path."
         )
 
-        # (c) evidence_items has >= 1 row (Deep persisted at least 1 EvidenceCard).
+        # (e) evidence_items has >= 1 row — sanity check that the
+        # evidence_store_write tool_calls rows actually persisted state.
         # NOTE: do NOT assert on [E-...] markers in draft — Deep MAY produce 0
         # evidence if S2 still flakes; the test asserts that the pipeline runs,
         # not perfect output. For strict citation integrity, use the manual
@@ -228,19 +271,6 @@ def test_w2_bounded_smoke_single_section_e2e(
         assert evidence_count >= 1, (
             f"evidence_items table has 0 rows — Deep did not persist any evidence. "
             f"deep_queue_len={len(deep_queue)}, tool_rows={tool_rows}"
-        )
-
-        # (d) section_drafts has key "S1" and is non-empty
-        assert "S1" in section_drafts, (
-            f"section_drafts missing S1; got {sorted(section_drafts.keys())}"
-        )
-        assert section_drafts["S1"], "section_drafts[S1] is empty/falsy"
-
-        # (e) tool_calls has >= 1 row for arxiv_search (Wide called arxiv successfully)
-        tools_called = {row[0] for row in tool_rows}
-        assert "arxiv_search" in tools_called, (
-            f"arxiv_search not in tool_calls; got {tools_called}. "
-            f"Wide never dispatched arxiv_search — check Wide invocation."
         )
 
         # (f) wall_time hard cap: 5 min. If > 3 min, warn (not fail).

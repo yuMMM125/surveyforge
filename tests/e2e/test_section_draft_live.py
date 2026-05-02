@@ -15,7 +15,7 @@ progress":
      instead of submitting a triaged shortlist.
   2. S2 rate-limit storms — when Wide forced-exits, it hands off many candidate
      paper_ids; Deep then s2_lookups them serially and gets 429'd. The
-     `MAX_FORCED_EXIT_HANDOFF_PER_SECTION` cap mitigates this but doesn't
+     `MAX_HANDOFF_TO_DEEP_PER_SECTION` cap mitigates this but doesn't
      fully eliminate the failure mode on broad topics.
   3. Model behavior drift — DeepSeek/GLM/MiniMax behavior on the same prompt
      varies day-to-day; an outline that succeeded yesterday may forced-exit
@@ -56,9 +56,11 @@ Asserts (in order, all must pass):
       at least one [E-...] citation marker
   (d) every [E-...] across all drafts resolves to a real evidence_id row
       (citation integrity — zero orphans)
-  (e) tool_calls has >= 1 row each for arxiv_search (Wide) + s2_lookup (Deep).
-      NOT evidence_store_write — Deep persists via EvidenceStore.save() host-
-      managed, not tool_gateway. web_search is allowed-but-optional.
+  (e) tool_calls has >= 1 row each for arxiv_search (Wide), s2_lookup (Deep),
+      AND evidence_store_write (Deep — one row per EvidenceCard persisted via
+      the real evidence_store_write impl wired in Task 5; see researcher_deep.py
+      line ~341 `write_gateway.call(..., "evidence_store_write", ...)`).
+      web_search is allowed-but-optional (Wide may pick it).
 
 NOT asserted (covered by spike log + Langfuse manual inspection):
   - per-role token counts (W2 has no model_calls writer; Langfuse-only)
@@ -228,10 +230,14 @@ def test_w2_end_to_end_multi_section_draft_for_rlhf(
             print("  (no tool_calls rows for this run — Wide and Deep never invoked any tool)")
 
         # (5) Deep critical path — s2_lookup vs evidence persistence
-        # Per Task 7 AD #5(e), evidence_store_write is NOT expected in tool_calls
-        # (Deep persists via EvidenceStore.save() host-managed). So
-        # s2_lookup>0 + evidence_store_write=0 is the *normal* W2 shape; what
-        # matters is whether s2_lookup outputs actually carried abstracts.
+        # Both s2_lookup AND evidence_store_write go through tool_gateway in W2:
+        # `researcher_deep.py:341` calls
+        # `write_gateway.call(RESEARCHER_DEEP, "evidence_store_write", ...)` for
+        # each EvidenceCard. So s2_lookup>0 + evidence_store_write>0 is the
+        # happy-path shape. s2_lookup>0 + evidence_store_write=0 means Deep
+        # rejected every output (no EvidenceCards produced) and is worth
+        # diagnosing — usually s2 returned no abstracts and Deep had nothing
+        # to extract.
         s2_count = sum(r[5] for r in tool_breakdown if r[0] == "s2_lookup")
         esw_count = sum(r[5] for r in tool_breakdown if r[0] == "evidence_store_write")
         print(
@@ -357,10 +363,12 @@ def test_w2_end_to_end_multi_section_draft_for_rlhf(
                 (run.run_id,),
             )
             tools_called = {row[0] for row in cur.fetchall()}
-        # NOTE: evidence_store_write is NOT in this set — Deep persists via
-        # EvidenceStore.save() host-managed, not tool_gateway. web_search
-        # is allowed-but-optional (model may or may not pick it).
-        expected_tools = {"arxiv_search", "s2_lookup"}
+        # All three of arxiv_search (Wide), s2_lookup (Deep abstract pre-fetch),
+        # and evidence_store_write (Deep evidence persistence — wired in Task 5,
+        # researcher_deep.py:341) go through tool_gateway and are required for
+        # the W2 happy path. web_search is allowed-but-optional (model may or
+        # may not pick it).
+        expected_tools = {"arxiv_search", "s2_lookup", "evidence_store_write"}
         missing_tools = expected_tools - tools_called
         assert not missing_tools, (
             f"missing expected tool_calls: {missing_tools}; got {tools_called}"

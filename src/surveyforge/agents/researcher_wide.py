@@ -56,14 +56,17 @@ MAX_TURNS_PER_SECTION = 8
 SUBMIT_TOOL_NAME = "submit_results"
 CONTEXT_OVERFLOW = "context_overflow"  # matches spec § 2.7.6 ErrorCategory string
 
-# Cap for forced-exit handoff: maximum number of `seen_paper_ids` per section
-# that get pushed onto `deep_read_queue` when Wide forced-exits without producing
-# `submit_results`. Without this cap, broad-topic forced-exits dump 20-40
+# Cap for per-section handoff to Deep: maximum number of paper_ids per section
+# that get pushed onto `deep_read_queue`, applied to BOTH normal-completion AND
+# forced-exit paths. Without this cap, broad-topic forced-exits dump 20-40
 # candidates per section into deep_read_queue, which Deep then tries to s2_lookup
 # serially and gets rate-limited by Semantic Scholar. Bounding to 3 keeps Deep
-# within S2's effective throughput. Normal-completion (LLM-shortlisted) handoff
-# is UNCHANGED — only the forced-exit branch is capped.
-MAX_FORCED_EXIT_HANDOFF_PER_SECTION = 3
+# within S2's effective throughput. The cap is applied to normal completion too
+# because Wide's `submit_results` may include a long shortlist when the model is
+# verbose — a 20-paper shortlist with all `handoff_to_deep=True` would defeat
+# the whole bounded-smoke design. Per-section `section_notes` recording remains
+# uncapped (full diagnostic set preserved); only the queue add is bounded.
+MAX_HANDOFF_TO_DEEP_PER_SECTION = 3
 
 
 class _SubmitArgs(BaseModel):
@@ -390,13 +393,25 @@ def make_researcher_wide_node(
             )
 
             if output is not None:
-                # Normal completion — record candidates + handoff_to_deep flagged
+                # Normal completion — record candidates + handoff_to_deep flagged.
+                # section_notes recording is UNCAPPED (full set preserved for
+                # diagnostics + Deep's section_notes cross-reference); only the
+                # deep_read_queue handoff is bounded by
+                # MAX_HANDOFF_TO_DEEP_PER_SECTION so a verbose model that tags
+                # all 20 candidates handoff_to_deep=True can't blow past S2's
+                # rate budget. Iteration order preserved (LLM-supplied order).
                 new_section_notes[section.section_id] = [
                     p.model_dump() for p in output.candidate_papers
                 ]
+                section_handoff_count = 0
                 for paper in output.candidate_papers:
-                    if paper.handoff_to_deep and paper.paper_id not in new_deep_queue:
+                    if (
+                        paper.handoff_to_deep
+                        and paper.paper_id not in new_deep_queue
+                        and section_handoff_count < MAX_HANDOFF_TO_DEEP_PER_SECTION
+                    ):
                         new_deep_queue.append(paper.paper_id)
+                        section_handoff_count += 1
             else:
                 # Forced exit — Wide didn't get to triage these via submit_results.
                 # Write CandidatePaper-shaped stubs (paper_id known, why_relevant/title
@@ -409,7 +424,7 @@ def make_researcher_wide_node(
                 # Without this cap, broad-topic forced-exits dump 20-40 candidates per
                 # section into deep_read_queue, which Deep then tries to s2_lookup
                 # serially and gets rate-limited by Semantic Scholar. Bounding to
-                # MAX_FORCED_EXIT_HANDOFF_PER_SECTION (=3) keeps Deep within S2's
+                # MAX_HANDOFF_TO_DEEP_PER_SECTION (=3) keeps Deep within S2's
                 # effective throughput. Sort first for determinism — set ordering
                 # is not stable across Python invocations.
                 # NOTE: stubs in section_notes still cover all seen paper_ids so Deep's
@@ -427,7 +442,7 @@ def make_researcher_wide_node(
                     }
                     for pid in seen_paper_ids
                 ]
-                capped_handoff = sorted(seen_paper_ids)[:MAX_FORCED_EXIT_HANDOFF_PER_SECTION]
+                capped_handoff = sorted(seen_paper_ids)[:MAX_HANDOFF_TO_DEEP_PER_SECTION]
                 for pid in capped_handoff:
                     if pid not in new_deep_queue:
                         new_deep_queue.append(pid)
