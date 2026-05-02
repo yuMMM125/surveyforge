@@ -35,7 +35,7 @@ def fake_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[str, str]]:
     not try to set up a SOCKS transport when the dev machine has ALL_PROXY set.
     """
     keys = {
-        "SJTU_MODELS_API_KEY": "fake-sjtu",
+        "MODELS_API_KEY": "fake-models",
         "LANGFUSE_PUBLIC_KEY": "fake-pub",
         "LANGFUSE_SECRET_KEY": "fake-sec",
         "LANGFUSE_HOST": "https://example.test",

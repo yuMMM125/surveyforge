@@ -1,8 +1,8 @@
-"""SurveyForge CLI — `surveyforge run / status` (resume / cancel / export = W3+ stubs).
+"""SurveyForge CLI for `surveyforge run` and `surveyforge status`.
 
-Per Task 6 Architecture Decision #5: exit codes 0/1/2/3 (success/failed/cancelled/
-usage). `IdempotencyConflict` on `run --idempotency-key K` -> exit 3 with the
-existing run_id surfaced (caller can re-use that run_id for `status`).
+Exit codes: 0/1/2/3 for success, failed, cancelled, and usage errors.
+`IdempotencyConflict` on `run --idempotency-key K` returns exit 3 with the
+existing run_id surfaced so the caller can re-use it with `status`.
 """
 from __future__ import annotations
 
@@ -27,12 +27,11 @@ EXIT_USAGE = 3
 def main(argv: list[str] | None = None) -> int:
     """SurveyForge CLI entry point.
 
-    Calls `load_dotenv()` at startup so the user can put SJTU_MODELS_API_KEY,
+    Calls `load_dotenv()` at startup so the user can put MODELS_API_KEY,
     LANGFUSE_*, SURVEYFORGE_DATABASE_URL etc. in `.env` instead of exporting
-    them every shell session. NOTE: this dotenv load is process-local — it
+    them every shell session. NOTE: this dotenv load is process-local: it
     does NOT export to the parent shell, and it does NOT propagate to other
-    Python processes (e.g., the schema-init one-liner in Task 7 Step 7.0b(c)
-    has its own `load_dotenv()`).
+    Python processes.
     """
     load_dotenv()  # auto-load .env so users don't need to export vars every session
     parser = _build_parser()
@@ -43,7 +42,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "status":
         return _cmd_status(args.run_id)
     if args.cmd in {"resume", "cancel", "export"}:
-        print(f"{args.cmd}: deferred to W3+; not implemented in W2", file=sys.stderr)
+        print(f"{args.cmd}: deferred; not implemented yet", file=sys.stderr)
         return EXIT_USAGE
     return EXIT_USAGE  # unreachable; argparse `required=True` blocks empty cmd
 
@@ -51,14 +50,15 @@ def main(argv: list[str] | None = None) -> int:
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="surveyforge",
-        description="Multi-agent academic survey generator (W2 minimal CLI)",
+        description="Multi-agent academic survey generator",
     )
     sub = p.add_subparsers(dest="cmd", required=True)
 
     run = sub.add_parser("run", help="Start a new survey run")
     run.add_argument("--topic", required=True, help="Survey topic")
     run.add_argument(
-        "--idempotency-key", default=None,
+        "--idempotency-key",
+        default=None,
         help="Idempotency key (auto-generated if omitted)",
     )
 
@@ -66,7 +66,7 @@ def _build_parser() -> argparse.ArgumentParser:
     status.add_argument("run_id", help="Run id (e.g., run_abc123def456)")
 
     for stub_cmd in ("resume", "cancel", "export"):
-        s = sub.add_parser(stub_cmd, help=f"({stub_cmd} — deferred to W3+)")
+        s = sub.add_parser(stub_cmd, help=f"({stub_cmd} is not implemented yet)")
         s.add_argument("run_id", nargs="?")
 
     return p
@@ -95,10 +95,10 @@ def _cmd_run(topic: str, idempotency_key: str | None) -> int:
         graph = build_graph()
         result = graph.invoke(initial_state, config=config)
     except Exception as exc:
-        # AD #12 (W2-minimal): all graph-invoke exceptions are lumped into
-        # `schema_invalid` to keep CLI error handling small. Task 7 will refine
-        # this to call `classify_exception(exc)` so transport errors / 429 / 5xx
-        # get distinct error_category values.
+        # Technical-preview behavior: all graph-invoke exceptions are lumped
+        # into `schema_invalid` to keep CLI error handling small. Future runtime
+        # work should call `classify_exception(exc)` so transport errors, 429s,
+        # and 5xx responses get distinct error_category values.
         with transaction() as conn:
             RunManager(conn).fail(run.run_id, error_category="schema_invalid")
         print(f"run {run.run_id} failed: {exc!s}", file=sys.stderr)
@@ -110,10 +110,8 @@ def _cmd_run(topic: str, idempotency_key: str | None) -> int:
     print(f"run_id: {run.run_id}")
     drafts = result.get("section_drafts", {})
     print(f"sections: {sorted(drafts.keys())}")
-    # AD #13: show each draft body so the deliverable "viewable section draft"
-    # is satisfied literally. Drafts can be long; readers can pipe to a pager
-    # or redirect to a file. Empty drafts (sections with no evidence) still
-    # print the header + "_No evidence available..._" fallback line.
+    # Show each draft body so the deliverable "viewable section draft" is
+    # satisfied literally. Empty drafts still print their fallback line.
     for section_id in sorted(drafts.keys()):
         print("---")
         print(f"[section_id: {section_id}]")

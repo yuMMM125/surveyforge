@@ -31,7 +31,7 @@ Run this test ad-hoc when:
 Expect ~8-25 min wall time + real LLM/API quota consumption per run.
 
 Pre-reqs (per Task 7 AD #14):
-  - `SJTU_MODELS_API_KEY` in env (real key, not placeholder) — REQUIRED
+  - `MODELS_API_KEY` in env (real key, not placeholder) - REQUIRED
   - `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_HOST` — recommended
     (run still completes if missing; manual Phase C trace check skipped)
   - `SERPER_API_KEY` — soft prereq; missing tolerated (Wide may waste 1-2 ReAct
@@ -114,12 +114,12 @@ def test_w2_end_to_end_multi_section_draft_for_rlhf(
     (`build_graph()`) instead of a single agent factory. Outline is multi-section
     because Planner schema enforces Field(min_length=3, max_length=7).
     """
-    api_key = os.environ.get("SJTU_MODELS_API_KEY", "")
+    api_key = os.environ.get("MODELS_API_KEY") or os.environ.get("SJTU_MODELS_API_KEY", "")
     if not api_key:
-        pytest.skip("SJTU_MODELS_API_KEY not set")
+        pytest.skip("MODELS_API_KEY not set")
     if _is_placeholder_key(api_key):
         pytest.skip(
-            f"SJTU_MODELS_API_KEY appears to be a placeholder ({api_key[:12]}...)"
+            f"MODELS_API_KEY appears to be a placeholder ({api_key[:12]}...)"
         )
 
     # Wire testcontainer URL into the production DB code path. Both runtime.db

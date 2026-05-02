@@ -26,7 +26,7 @@ Why this design (Task 7 polish, 2026-05-02):
   researcher_wide.py), so Deep gets a bounded queue and won't get
   S2-throttled regardless of which exit shape Wide takes.
 
-Pre-reqs (same as test_section_draft_live.py): SJTU_MODELS_API_KEY real key,
+Pre-reqs (same as test_section_draft_live.py): MODELS_API_KEY real key,
 Docker daemon up for testcontainer, network to SJTU/arxiv/S2 endpoints.
 SERPER_API_KEY soft prereq (Wide may pick web_search; missing tolerated).
 
@@ -86,12 +86,12 @@ def test_w2_bounded_smoke_single_section_e2e(
     for stub Synth/Write integration coverage; multi-section is moved to
     `test_section_draft_live.py` as opportunistic / manual).
     """
-    api_key = os.environ.get("SJTU_MODELS_API_KEY", "")
+    api_key = os.environ.get("MODELS_API_KEY") or os.environ.get("SJTU_MODELS_API_KEY", "")
     if not api_key:
-        pytest.skip("SJTU_MODELS_API_KEY not set")
+        pytest.skip("MODELS_API_KEY not set")
     if _is_placeholder_key(api_key):
         pytest.skip(
-            f"SJTU_MODELS_API_KEY appears to be a placeholder ({api_key[:12]}...)"
+            f"MODELS_API_KEY appears to be a placeholder ({api_key[:12]}...)"
         )
 
     # Wire testcontainer URL into both production DB pools (runtime.db +

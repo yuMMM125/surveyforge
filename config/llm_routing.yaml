@@ -1,10 +1,13 @@
-# 10-role binding per spec § 2.1 (v2 context-calibrated).
-# All values verified via Phase 0 spike (2026-05-01) — see _private/spikes/provider-compatibility.md.
+# Role-to-model routing for the default OpenAI-compatible gateway.
 # Provider names must match surveyforge.llm.providers.ProviderName.
-# `supports_fc` is optional; omit to inherit provider-level default. Set explicitly
-# only when a binding's model differs in FC capability from its provider default.
-# `notes:` fields are documentation-only — load_routing_yaml does not load them
-# into RoleBinding (forward-compatible: unknown per-binding keys are ignored).
+# Override MODELS_BASE_URL and MODELS_API_KEY to use another compatible
+# gateway, then update model aliases here if your provider uses different names.
+#
+# `supports_fc` is optional. Omit it to inherit the provider-level default.
+# Set it explicitly only when a binding's model differs from the provider
+# default function-calling capability.
+# `notes` fields are documentation-only; load_routing_yaml ignores unknown
+# per-binding keys.
 
 planner:
   provider: glm
@@ -16,25 +19,25 @@ researcher_wide:
   provider: deepseek
   model: deepseek-chat
   temperature: 0.0
-  notes: "32K limit; snippet-level triage; ReAct ≤ 8 turns."
+  notes: "32K limit; snippet-level triage; bounded ReAct turns."
 
 researcher_deep:
   provider: minimax
   model: minimax
   temperature: 0.0
-  notes: "MiniMax-M2.7 alias; 192K; full PDF read + methodology extraction. Use FC, not raw JSON."
+  notes: "MiniMax-M2.7 alias; 192K; abstract/evidence extraction. Prefer function-calling."
 
 synthesizer:
   provider: glm
   model: glm-5.1
   temperature: 0.0
-  notes: "Cross-evidence merge + taxonomy."
+  notes: "Cross-evidence merge and taxonomy."
 
 writer:
   provider: minimax
   model: minimax
   temperature: 0.3
-  notes: "Long-form drafting; needs slight creativity."
+  notes: "Long-form drafting; slight creativity allowed."
 
 critic_section:
   provider: glm
@@ -51,7 +54,7 @@ judge_default:
   provider: qwen
   model: qwen
   temperature: 0.0
-  notes: "Qwen3.5-27B alias; 256K; FC FAILS via gateway → structured_call uses JSON-content path."
+  notes: "Qwen3.5-27B alias; 256K; function-calling disabled on the default gateway."
 
 judge_final:
   provider: glm
@@ -64,4 +67,4 @@ lite_worker:
   model: qwen3coder
   temperature: 0.0
   supports_fc: true
-  notes: "Qwen3Coder; FC PASSES per spike. Used for high-frequency utility tasks (keyword/metadata extraction, etc.)."
+  notes: "Qwen3Coder; function-calling enabled for high-frequency utility tasks."

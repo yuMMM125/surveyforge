@@ -39,11 +39,11 @@ def test_researcher_wide_live_finds_papers_for_long_context_topic(
     initialized_pool: ConnectionPool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    api_key = os.environ.get("SJTU_MODELS_API_KEY", "")
+    api_key = os.environ.get("MODELS_API_KEY") or os.environ.get("SJTU_MODELS_API_KEY", "")
     if not api_key:
-        pytest.skip("SJTU_MODELS_API_KEY not set")
+        pytest.skip("MODELS_API_KEY not set")
     if _is_placeholder_key(api_key):
-        pytest.skip(f"SJTU_MODELS_API_KEY appears to be a placeholder ({api_key[:12]}...)")
+        pytest.skip(f"MODELS_API_KEY appears to be a placeholder ({api_key[:12]}...)")
 
     monkeypatch.setenv("SURVEYFORGE_DATABASE_URL", postgres_url)
     from surveyforge.runtime.db import reset_pool, transaction

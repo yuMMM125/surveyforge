@@ -4,7 +4,7 @@
 _private/
 
 # ==============================================================================
-# Secrets & local config
+# Secrets and local config
 # ==============================================================================
 .env
 .env.*
@@ -36,7 +36,7 @@ pip-log.txt
 pip-delete-this-directory.txt
 
 # ==============================================================================
-# Tests / type-check / coverage
+# Tests, type-check, and coverage
 # ==============================================================================
 .pytest_cache/
 .coverage
@@ -51,7 +51,7 @@ htmlcov/
 .pytype/
 
 # ==============================================================================
-# Editors / OS
+# Editors and OS
 # ==============================================================================
 .vscode/
 .idea/
@@ -63,7 +63,7 @@ Thumbs.db
 desktop.ini
 
 # ==============================================================================
-# Logs & runtime outputs
+# Logs and runtime outputs
 # ==============================================================================
 logs/
 *.log
@@ -73,13 +73,13 @@ wandb/
 mlruns/
 
 # ==============================================================================
-# Project-specific
+# Project-specific local artifacts
 # ==============================================================================
-# Bad case 沉淀（debug 用，本地保留，不开源）
+# Local debug cases; keep private.
 bad_cases/
-# 评测期间的中间产物
+# Intermediate benchmark outputs.
 benchmark/results/raw/
-# 缓存的 PDF 与论文
+# Cached PDFs and paper files.
 cache/
 *.pdf
 
@@ -88,4 +88,3 @@ cache/
 
 # Local dev DB volume (docker compose)
 postgres_data/
-

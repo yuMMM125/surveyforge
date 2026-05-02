@@ -108,10 +108,10 @@ def test_cli_status_unknown_run_returns_usage_error(
     assert "run not found" in capsys.readouterr().err
 
 
-# ---- W3+ stub subcommands ----
+# ---- Deferred subcommands ----
 
 @pytest.mark.parametrize("stub_cmd", ["resume", "cancel", "export"])
 def test_cli_stub_subcommands_print_deferred_message(stub_cmd: str, capsys):
     rc = cli.main([stub_cmd, "run_some_id"])
     assert rc == cli.EXIT_USAGE
-    assert "deferred to W3+" in capsys.readouterr().err
+    assert "deferred; not implemented yet" in capsys.readouterr().err

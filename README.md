@@ -1,79 +1,199 @@
 # SurveyForge
 
-> Multi-agent academic survey generation system (AI/ML focus). Inspired by Stanford STORM (NAACL 2024), reimplemented in LangGraph with academic-specific improvements.
+SurveyForge is a technical preview of a multi-agent academic survey generation
+system for AI/ML literature review workflows.
 
-🚧 Under active development. Detailed docs to come.
+It is inspired by the research direction behind systems such as STORM, but the
+implementation focuses on a production-style agent foundation: typed prompt
+contracts, guarded tool access, runtime persistence, evidence storage, and
+auditable execution traces.
 
-## Quickstart
+## What It Does
+
+SurveyForge takes a survey topic and runs a LangGraph pipeline:
+
+```text
+START -> planner -> researcher_wide -> researcher_deep -> synthesize -> write -> END
+```
+
+The current pipeline can:
+
+- plan a topic into structured survey sections;
+- search for candidate papers through arXiv;
+- look up paper metadata and abstracts through Semantic Scholar;
+- route tool calls through a policy-enforced gateway;
+- persist run state, tool calls, checkpoints, and evidence rows in PostgreSQL;
+- produce a minimal section draft from stored evidence;
+- expose a small CLI for `run` and `status`.
+
+## Architecture Highlights
+
+- **LangGraph orchestration**: a linear graph with Planner, Researcher-Wide,
+  Researcher-Deep, Synthesize, and Write nodes.
+- **Prompt contract pack**: YAML front matter, role-specific prompt files,
+  allowed-tool declarations, completion-tool support, and prompt registry tests.
+- **Runtime contract pack**: PostgreSQL-backed run lifecycle, checkpointing,
+  evidence storage, tool-call audit rows, budget checks, error classification,
+  and trust-boundary helpers.
+- **Tool gateway**: role-based tool policies, Pydantic input/output validation,
+  cache-aware `input_hash`, redaction-safe hashing, and tool-call persistence.
+- **Evidence-first design**: factual claims are expected to point back to
+  persisted `EvidenceItem` records instead of free-floating model prose.
+- **Provider routing**: OpenAI-compatible model access through a configurable
+  gateway, with per-role routing and rate limiting.
+
+## Current Status
+
+This repository is currently a **technical preview**, not a finished survey
+writer.
+
+Implemented and verified locally:
+
+- prompt/schema contracts for Planner, Researcher-Wide, and Researcher-Deep;
+- PostgreSQL runtime foundation and LangGraph checkpoint wiring;
+- real arXiv search wrapper;
+- Semantic Scholar paper lookup wrapper with retry-on-429, `Retry-After`
+  handling, and optional `SEMANTIC_SCHOLAR_API_KEY` support;
+- Serper-based web search wrapper;
+- Planner, Researcher-Wide, and Researcher-Deep nodes;
+- minimal Synthesize and Write stubs;
+- CLI draft preview support;
+- non-integration test suite, ruff, and mypy strict checks.
+
+Known limitation:
+
+- The bounded live graph smoke currently depends on Semantic Scholar API access.
+  Anonymous public quota can be throttled with HTTP 429 even after
+  retry/backoff. API-key verification is pending. Until
+  `SEMANTIC_SCHOLAR_API_KEY` is configured, full live graph and CLI demos may
+  fail at the Semantic Scholar lookup step.
+
+## Repository Layout
+
+```text
+config/
+  llm_routing.yaml              # role -> provider/model routing
+src/surveyforge/
+  agents/                       # Planner, Researcher-Wide, Researcher-Deep
+  llm/                          # provider registry, router, rate limits
+  prompts/                      # role prompts + shared rules
+  runtime/                      # DB, run manager, gateway, evidence, trust
+  schemas/                      # structured outputs and citation IDs
+  tools/                        # arXiv, Semantic Scholar, Serper wrappers
+  graph.py                      # LangGraph construction
+  cli.py                        # surveyforge run/status
+tests/
+  agents/
+  e2e/
+  llm/
+  prompts/
+  runtime/
+  schemas/
+  tools/
+```
+
+
+## Setup
+
+Install dependencies:
 
 ```bash
 uv venv
 uv pip install -e ".[dev]"
-cp .env.example .env  # fill in API keys
-pytest
+cp .env.example .env
 ```
 
-## License
+Fill in `.env`:
 
-Apache-2.0
-
----
-
-## W2 status (2026-05-02)
-
-W2 ships a 5-node linear LangGraph pipeline + minimal CLI:
-
-```text
-START → planner → researcher_wide → researcher_deep → synthesize → write → END
+```env
+MODELS_BASE_URL=
+MODELS_API_KEY=
+SEMANTIC_SCHOLAR_API_KEY=
+SERPER_API_KEY=
+LANGFUSE_PUBLIC_KEY=
+LANGFUSE_SECRET_KEY=
+LANGFUSE_HOST=https://cloud.langfuse.com
 ```
 
-Per-node roles (multi-section per Planner schema, 3-7 sections per outline):
+`MODELS_BASE_URL` is optional. If omitted, SurveyForge uses the default
+OpenAI-compatible gateway configured in `src/surveyforge/llm/providers.py`.
+When switching providers, update both `MODELS_BASE_URL` and the model aliases in
+`config/llm_routing.yaml`.
 
-- **Planner** (GLM glm-5.1): topic → 3-7 sections, each with research questions + evidence checklist
-- **Researcher-Wide** (DeepSeek deepseek-chat, ≤ 8 ReAct turns per section): real arXiv search, hand-off shortlist to Deep
-- **Researcher-Deep** (MiniMax minimax): per-section deep read + Semantic Scholar lookup → structured `EvidenceCard` rows
-- **Synthesize stub** (W2-only): dedupe evidence by paper_id, populate `structured_extracts`
-- **Write stub** (W2-only): emit markdown bullet draft per section with `[E-...]` inline citations
+`SEMANTIC_SCHOLAR_API_KEY` is optional for code paths and unit tests, but is
+recommended for live integration runs. `SERPER_API_KEY` is optional unless the
+model chooses `web_search` during a live run.
 
-What is verified:
-
-- **Code-level**: 294 unit tests pass, ruff clean, `mypy --strict` clean across all 39 source files.
-- **Node-level live**: `tests/agents/integration/test_planner_live.py`, `test_researcher_wide_live.py`, and `test_researcher_deep_live.py` all independently PASS against the real SJTU gateway (GLM / DeepSeek / MiniMax) with real arXiv + Semantic Scholar.
-- **Bounded graph smoke** (`tests/e2e/test_bounded_smoke.py`): architecturally complete and passes statically — Wide handoff cap (forced-exit + normal both ≤3), `s2_lookup` retry-on-429 with backoff + `Retry-After` honoring + `SEMANTIC_SCHOLAR_API_KEY` env-var support (commit `d3d451c`), full tool-calls diagnostic dump.
-
-What is blocked:
-
-- The bounded smoke's `evidence_store_write` assertion is gated on Semantic Scholar API access. Anonymous public quota persistently throttles `s2_lookup` from the dev IP (4 attempts × 1+2+4s backoff all return 429). The retry / header-injection design is unit-tested; live PASS is pending an `SEMANTIC_SCHOLAR_API_KEY` value (key application in flight). Once provisioned, set it in `.env` and rerun `uv run pytest tests/e2e -m integration -v`.
-
-What is deferred (opportunistic):
-
-- **Manual full multi-section e2e** (`tests/e2e/test_section_draft_live.py`, `@pytest.mark.manual`): same SS rate-limit blocker, plus Wide forced-exit nondeterminism on broad topics (e.g. RLHF). Run ad-hoc when both SS access and a long wall-time budget are available.
-
-Demo (uses `python-dotenv`, so a `.env` with `SJTU_MODELS_API_KEY` and
-`SURVEYFORGE_DATABASE_URL` works for both shells; will likely hit the same SS
-rate limit until `SEMANTIC_SCHOLAR_API_KEY` is configured):
-
-bash:
+Start PostgreSQL:
 
 ```bash
 docker compose up -d postgres
-export SURVEYFORGE_DATABASE_URL=postgresql://surveyforge:surveyforge@localhost:5432/surveyforge
-export SJTU_MODELS_API_KEY=...
-uv run surveyforge run --topic "Survey of RLHF progress"
 ```
 
-PowerShell:
+For local CLI runs, make sure `SURVEYFORGE_DATABASE_URL` is set. You can put it
+in `.env` or export it in your shell:
 
-```powershell
-docker compose up -d postgres
-$env:SURVEYFORGE_DATABASE_URL = "postgresql://surveyforge:surveyforge@localhost:5432/surveyforge"
-$env:SJTU_MODELS_API_KEY = "..."
-uv run surveyforge run --topic "Survey of RLHF progress"
+```env
+SURVEYFORGE_DATABASE_URL=postgresql://surveyforge:surveyforge@localhost:5432/surveyforge
 ```
 
-Deferred to W3-W5:
+## Usage
 
-- **Real Synthesizer** (W3): schema-guided method/dataset/metric extraction with comparison matrix
-- **Real Writer** (W4): multi-paragraph long-form drafting + academic citation insertion
-- **Critic** + retry loop (W5): section-level + final-survey audit, including citation hallucination check
-- **DB `model_calls` logging** (W3+): per-call token / latency persistence; W2 uses Langfuse-only trace metrics
+Run a topic:
+
+```bash
+uv run surveyforge run --topic "long-context LLM benchmarks"
+```
+
+Check a run:
+
+```bash
+uv run surveyforge status <run_id>
+```
+
+On Windows PowerShell, use the same `uv run ...` commands after filling `.env`.
+If `uv` is not on PATH, call it with its absolute path.
+
+## Testing
+
+Default non-integration suite:
+
+```bash
+uv run pytest -q
+uv run ruff check .
+uv run mypy src
+```
+
+Live model/API tests are opt-in:
+
+```bash
+uv run pytest tests/agents/integration -m integration -v
+uv run pytest tests/e2e -m integration -v -s
+```
+
+Manual full-graph live test:
+
+```bash
+uv run pytest tests/e2e/test_section_draft_live.py -m manual -v -s
+```
+
+The manual full-graph test is opportunistic. It is useful for demos and
+diagnostics, but it is not treated as a stable default gate because it depends
+on external model behavior and Semantic Scholar rate limits.
+
+## Roadmap
+
+Near-term work:
+
+- verify bounded live graph smoke after Semantic Scholar API key approval;
+- harden provider/API retry behavior and live-run diagnostics;
+- add richer synthesis beyond the current evidence dedupe stub;
+- replace the writer stub with long-form academic drafting;
+- add critic/review loops for citation integrity and coverage;
+- persist model-call token and latency records in the database;
+- expand evaluation tasks for factuality, citation grounding, and section
+  completeness.
+
+## License
+
+MIT License. See [LICENSE](LICENSE).

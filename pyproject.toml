@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Multi-agent academic survey generator (AI/ML focus)"
 requires-python = ">=3.11"
 readme = "README.md"
-license = { text = "Apache-2.0" }
+license = { text = "MIT" }
 dependencies = [
     "langchain>=0.3,<1",
     "langchain-core>=0.3,<1",
