@@ -674,6 +674,245 @@ def test_deep_node_evidence_write_infrastructure_error_propagates(
         node(state, config)
 
 
+# ---- arxiv_lookup fallback (Task 7 polish 5: SS demoted to optional) ----
+
+def test_deep_node_fetches_via_arxiv_when_s2_429_on_arxiv_paper(
+    conn: psycopg.Connection, monkeypatch, patch_agent_transaction, respx_mock,
+):
+    """When s2_lookup returns 429 on an arxiv:* paper, Deep falls back to
+    arxiv_lookup and proceeds end-to-end. Both tool_calls audit rows persist:
+    s2_lookup with provider_429 (the failed primary), arxiv_lookup with
+    success (the fallback). Evidence is then written normally.
+    """
+    import httpx
+
+    from surveyforge.agents.researcher_deep import make_researcher_deep_node
+    from surveyforge.tools import arxiv_lookup, s2_lookup
+
+    patch_agent_transaction("surveyforge.agents.researcher_deep")
+
+    for var in ("ALL_PROXY", "HTTP_PROXY", "HTTPS_PROXY",
+                "all_proxy", "http_proxy", "https_proxy"):
+        monkeypatch.delenv(var, raising=False)
+
+    # Skip s2_lookup retry sleeps (deterministic test, no need to wait the
+    # full 1+2+4 backoff sequence)
+    monkeypatch.setattr("surveyforge.tools.s2_lookup.time.sleep", lambda s: None)
+
+    # s2 returns 429 four times (1 initial + 3 retries) → exhausted, raises
+    respx_mock.get(f"{s2_lookup.S2_API_BASE}/paper/arXiv:1706.03741").mock(
+        side_effect=[
+            httpx.Response(429),
+            httpx.Response(429),
+            httpx.Response(429),
+            httpx.Response(429),
+        ]
+    )
+    # arxiv fallback returns the abstract
+    respx_mock.get(arxiv_lookup.ARXIV_API_BASE).mock(
+        return_value=httpx.Response(200, content="""<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <id>http://arxiv.org/abs/1706.03741v1</id>
+    <title>Original RLHF paper</title>
+    <summary>We present a method for training reward models from human preferences.</summary>
+  </entry>
+</feed>
+""")
+    )
+
+    router = LLMRouter({
+        AgentRole.RESEARCHER_DEEP: RoleBinding(
+            provider=ProviderName.MINIMAX, model="minimax",
+        ),
+    })
+    monkeypatch.setattr(router, "get_llm", MagicMock(return_value=MagicMock()))
+    monkeypatch.setattr(
+        "surveyforge.agents.researcher_deep.structured_call",
+        MagicMock(return_value={
+            "section_id": "S1",
+            "paper_ids_processed": ["arxiv:1706.03741"],
+            "evidence_cards": [{
+                "evidence_id": "ignored-overridden",
+                "paper_id": "arxiv:1706.03741",
+                "section_id": "S1",
+                "claim": "Reward modeling from human preferences",
+                "source_span": "We present a method...",
+                "confidence": 0.95,
+            }],
+            "insufficient_evidence_paper_ids": [],
+        }),
+    )
+
+    registry = PromptRegistry()
+    budget_manager = BudgetManager()
+    node = make_researcher_deep_node(router, registry, budget_manager)
+
+    run_id = _make_run(conn)
+    state = _state_with_handoff("arxiv:1706.03741")
+    config: RunnableConfig = {"configurable": {"thread_id": run_id}}
+    node(state, config)
+
+    # tool_calls has both s2_lookup (provider_429) and arxiv_lookup (success)
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT tool_name, error_category FROM tool_calls "
+            "WHERE run_id = %s ORDER BY created_at",
+            (run_id,),
+        )
+        rows = cur.fetchall()
+    tool_names_with_status = [(r[0], r[1]) for r in rows]
+    assert ("s2_lookup", "provider_429") in tool_names_with_status, (
+        f"expected s2_lookup with provider_429; got {tool_names_with_status}"
+    )
+    assert any(
+        name == "arxiv_lookup" and err is None
+        for name, err in tool_names_with_status
+    ), f"expected arxiv_lookup success row; got {tool_names_with_status}"
+
+    # Evidence persisted via the fallback's abstract
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT paper_id, section_id FROM evidence_items WHERE run_id = %s",
+            (run_id,),
+        )
+        evidence_rows = cur.fetchall()
+    assert len(evidence_rows) == 1
+    assert evidence_rows[0] == ("arxiv:1706.03741", "S1")
+
+
+def test_deep_node_no_fallback_for_s2_papers_when_s2_429(
+    conn: psycopg.Connection, monkeypatch, patch_agent_transaction, respx_mock,
+):
+    """s2:* paper that 429s on s2_lookup MUST NOT trigger arxiv_lookup
+    fallback (arxiv API doesn't index s2 ids). Section gets skipped; paper
+    stays in deep_read_queue for upstream retry.
+    """
+    import httpx
+
+    from surveyforge.agents.researcher_deep import make_researcher_deep_node
+    from surveyforge.tools import s2_lookup
+
+    patch_agent_transaction("surveyforge.agents.researcher_deep")
+
+    for var in ("ALL_PROXY", "HTTP_PROXY", "HTTPS_PROXY",
+                "all_proxy", "http_proxy", "https_proxy"):
+        monkeypatch.delenv(var, raising=False)
+
+    monkeypatch.setattr("surveyforge.tools.s2_lookup.time.sleep", lambda s: None)
+
+    respx_mock.get(f"{s2_lookup.S2_API_BASE}/paper/abc123").mock(
+        side_effect=[
+            httpx.Response(429),
+            httpx.Response(429),
+            httpx.Response(429),
+            httpx.Response(429),
+        ]
+    )
+
+    router = LLMRouter({
+        AgentRole.RESEARCHER_DEEP: RoleBinding(
+            provider=ProviderName.MINIMAX, model="minimax",
+        ),
+    })
+    monkeypatch.setattr(router, "get_llm", MagicMock(return_value=MagicMock()))
+    monkeypatch.setattr(
+        "surveyforge.agents.researcher_deep.structured_call",
+        MagicMock(return_value=_canned_deep_output()),
+    )
+
+    registry = PromptRegistry()
+    budget_manager = BudgetManager()
+    node = make_researcher_deep_node(router, registry, budget_manager)
+
+    run_id = _make_run(conn)
+    state = _state_with_handoff("s2:abc123")
+    config: RunnableConfig = {"configurable": {"thread_id": run_id}}
+    result = node(state, config)
+
+    # tool_calls has s2_lookup (provider_429) but NO arxiv_lookup (paper_id
+    # not arxiv:* prefix → fallback skipped)
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT tool_name FROM tool_calls WHERE run_id = %s",
+            (run_id,),
+        )
+        tool_names = {r[0] for r in cur.fetchall()}
+    assert "s2_lookup" in tool_names
+    assert "arxiv_lookup" not in tool_names, (
+        f"s2:* papers must not trigger arxiv fallback; got {tool_names}"
+    )
+
+    # Paper stays in queue (transient — retry-eligible per existing semantics)
+    assert "s2:abc123" in result["deep_read_queue"]
+    rm = RunManager(conn)
+    assert rm.get(run_id).error_category == "provider_429"
+
+
+def test_deep_node_no_fallback_for_non_transient_s2_errors(
+    conn: psycopg.Connection, monkeypatch, patch_agent_transaction, respx_mock,
+):
+    """Non-transient s2 errors (e.g., 403 — auth/policy) must NOT trigger
+    arxiv_lookup fallback. arxiv won't fix a 403; the error propagates per
+    existing classify_exception semantics (or raw if unclassified).
+    """
+    import httpx
+
+    from surveyforge.agents.researcher_deep import make_researcher_deep_node
+    from surveyforge.tools import s2_lookup
+
+    patch_agent_transaction("surveyforge.agents.researcher_deep")
+
+    for var in ("ALL_PROXY", "HTTP_PROXY", "HTTPS_PROXY",
+                "all_proxy", "http_proxy", "https_proxy"):
+        monkeypatch.delenv(var, raising=False)
+
+    # 403 on s2 — not retried by s2_lookup (only 429 is), not fallbackable.
+    respx_mock.get(f"{s2_lookup.S2_API_BASE}/paper/arXiv:1706.03741").mock(
+        return_value=httpx.Response(403, text="forbidden")
+    )
+
+    router = LLMRouter({
+        AgentRole.RESEARCHER_DEEP: RoleBinding(
+            provider=ProviderName.MINIMAX, model="minimax",
+        ),
+    })
+    monkeypatch.setattr(router, "get_llm", MagicMock(return_value=MagicMock()))
+    monkeypatch.setattr(
+        "surveyforge.agents.researcher_deep.structured_call",
+        MagicMock(return_value=_canned_deep_output()),
+    )
+
+    registry = PromptRegistry()
+    budget_manager = BudgetManager()
+    node = make_researcher_deep_node(router, registry, budget_manager)
+
+    run_id = _make_run(conn)
+    state = _state_with_handoff("arxiv:1706.03741")
+    config: RunnableConfig = {"configurable": {"thread_id": run_id}}
+
+    # 403 has no classify_exception mapping (not 429, not 5xx, not schema).
+    # Per existing _fetch_abstract semantics in researcher_deep.py, the node
+    # catches the exception INSIDE the transaction, then classify_exception
+    # returns None for 403, so the node re-raises (no silent mask). Verify
+    # this happens AND no arxiv_lookup row was inserted.
+    with pytest.raises(httpx.HTTPStatusError) as exc_info:
+        node(state, config)
+    assert exc_info.value.response.status_code == 403
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT tool_name FROM tool_calls WHERE run_id = %s",
+            (run_id,),
+        )
+        tool_names = {r[0] for r in cur.fetchall()}
+    assert "s2_lookup" in tool_names
+    assert "arxiv_lookup" not in tool_names, (
+        f"non-transient s2 errors must not trigger arxiv fallback; "
+        f"got {tool_names}"
+    )
+
+
 # ---- factory shape ----
 
 def test_make_researcher_deep_node_returns_callable():

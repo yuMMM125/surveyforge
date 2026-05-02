@@ -39,10 +39,11 @@ Asserts (in order, all must pass):
   (c) section_notes["S1"] is non-empty (Wide's persistent output — survives
       Deep's queue-consumption semantics; deep_read_queue itself may be []
       after Deep finishes processing every shortlisted paper)
-  (d) tool_calls table has >= 1 row each for arxiv_search (Wide called
-      arxiv successfully), s2_lookup (Deep abstract pre-fetch), and
-      evidence_store_write (Deep persisted >= 1 EvidenceCard via the real
-      gateway — see researcher_deep.py ~line 341)
+  (d) tool_calls table has >= 1 row each for arxiv_search (Wide), s2_lookup
+      (Deep abstract pre-fetch), AND evidence_store_write (Deep persisted
+      EvidenceCard). On SS-throttled IPs, arxiv_lookup may also appear as
+      Deep's fallback path; not asserted because its presence depends on
+      whether s2 actually 429'd this run.
   (e) evidence_items table has >= 1 row (sanity — same persisted state as
       the evidence_store_write tool_calls rows)
   (f) wall time < 300s hard cap; warn at > 180s (soft)

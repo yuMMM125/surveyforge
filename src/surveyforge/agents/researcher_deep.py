@@ -36,7 +36,7 @@ from surveyforge.llm.structured_output import StructuredCallError, structured_ca
 from surveyforge.prompts.loader import PromptRegistry
 from surveyforge.runtime.budget import BudgetExceeded, BudgetManager
 from surveyforge.runtime.db import transaction
-from surveyforge.runtime.errors import classify_exception
+from surveyforge.runtime.errors import ErrorCategory, classify_exception
 from surveyforge.runtime.evidence import EvidenceItem, EvidenceStore
 from surveyforge.runtime.observability import with_run_metadata
 from surveyforge.runtime.runs import RunManager
@@ -44,12 +44,22 @@ from surveyforge.runtime.tool_gateway import ToolGateway, ToolPolicy
 from surveyforge.schemas.planner import PlannerSection
 from surveyforge.schemas.research import ResearcherDeepOutput
 from surveyforge.state import SurveyState
-from surveyforge.tools import s2_lookup
+from surveyforge.tools import arxiv_lookup, s2_lookup
 
 ResearcherDeepNode = Callable[[SurveyState, RunnableConfig], SurveyState]
 
 CONTEXT_OVERFLOW = "context_overflow"
 SCHEMA_INVALID = "schema_invalid"
+
+# Transient s2 errors that trigger an arxiv_lookup fallback for `arxiv:*` papers
+# (Task 7 polish 5, 2026-05-02). `ErrorCategory` doesn't have a dedicated
+# TRANSPORT_ERROR member yet; treat unclassified-but-fetch-time httpx exceptions
+# (e.g., httpx.ConnectError, httpx.ReadTimeout) as fallbackable too via the
+# isinstance check in `_is_fallbackable_s2_error` below.
+_FALLBACKABLE_S2_ERROR_CATEGORIES = frozenset({
+    ErrorCategory.PROVIDER_429,
+    ErrorCategory.PROVIDER_5XX,
+})
 
 
 class _EvidenceWriteOutput(BaseModel):
@@ -80,10 +90,14 @@ def _make_evidence_write_impl(conn: psycopg.Connection) -> Callable[..., dict[st
 def _register_deep_tools(gateway: ToolGateway, conn: psycopg.Connection) -> None:
     """Register Deep's tools onto a per-call gateway.
 
-    `s2_lookup`: for abstract pre-fetch. `evidence_store_write` (real impl,
-    replaces Bundle 1b placeholder): for EvidenceCard persistence.
+    `s2_lookup`: primary abstract pre-fetch path.
+    `arxiv_lookup`: fallback abstract pre-fetch for `arxiv:*` papers when
+        s2_lookup hits transient errors (Task 7 polish 5, 2026-05-02).
+    `evidence_store_write` (real impl, replaces Bundle 1b placeholder): for
+        EvidenceCard persistence.
     """
     s2_lookup.register(gateway)
+    arxiv_lookup.register(gateway)
     evidence_write_policy = ToolPolicy(
         tool_name="evidence_store_write",
         tool_version="0.1.0",
@@ -97,23 +111,12 @@ def _register_deep_tools(gateway: ToolGateway, conn: psycopg.Connection) -> None
     gateway.register(evidence_write_policy, _make_evidence_write_impl(conn))
 
 
-def _fetch_abstract(gateway: ToolGateway, paper_id: str) -> str | None:
-    """Look up paper abstract via s2_lookup.
+def _fetch_abstract_via_s2(gateway: ToolGateway, paper_id: str) -> str | None:
+    """Primary path: look up abstract via s2_lookup.
 
-    Returns None for legitimate "no abstract available" cases:
-      - `web:` prefix (W2 doesn't fetch web)
-      - s2 lookup returned `paper=None` (404 — handled inside the wrapper)
-      - paper exists but `abstract` field is empty/null
-
-    Does NOT catch exceptions. The caller (node body) wraps invocations in a
-    try/except + classify_exception so transport errors (httpx.HTTPStatusError
-    429/5xx) become `provider_429`/`provider_5xx` (retry-eligible), and
-    programmer errors (`ToolRoleDenied`, `ValidationError`) propagate unmasked.
-    Pretending these are "no abstract" would silently drop retryable papers
-    AND mask config bugs.
+    Returns None for legitimate "no abstract available" (paper=None or empty
+    abstract). Raises on transport errors — caller decides retry / fallback.
     """
-    if paper_id.startswith("web:"):
-        return None
     result = gateway.call(AgentRole.RESEARCHER_DEEP, "s2_lookup", paper_id=paper_id)
     # `result.output` is typed as the generic `BaseModel`; narrow to the concrete
     # `S2LookupOutput` so attribute access is mypy-strict-clean.
@@ -122,6 +125,99 @@ def _fetch_abstract(gateway: ToolGateway, paper_id: str) -> str | None:
     if paper is None or not paper.abstract:
         return None
     return paper.abstract
+
+
+def _fetch_abstract_via_arxiv(gateway: ToolGateway, paper_id: str) -> str | None:
+    """Fallback path: look up abstract via arxiv_lookup (arxiv:* papers only).
+
+    Mirrors `_fetch_abstract_via_s2` shape: returns the abstract on success,
+    None when the paper is found-but-has-no-abstract (rare for arxiv but
+    possible for some legacy ids), raises on transport errors.
+    """
+    result = gateway.call(
+        AgentRole.RESEARCHER_DEEP, "arxiv_lookup", paper_id=paper_id
+    )
+    output = arxiv_lookup.ArxivLookupOutput.model_validate(result.output.model_dump())
+    paper = output.paper
+    if paper is None or not paper.abstract:
+        return None
+    return paper.abstract
+
+
+def _is_fallbackable_s2_error(exc: BaseException) -> bool:
+    """Decide whether an s2_lookup exception is a transient transport error
+    eligible for the arxiv_lookup fallback.
+
+    Includes:
+      - classify_exception → PROVIDER_429 / PROVIDER_5XX (HTTP 429/5xx)
+      - any httpx.RequestError (connection / timeout / DNS) — these surface
+        before classify_exception sees a status code, so the classifier
+        returns None even though they're transient. Treat as fallbackable.
+
+    Excludes:
+      - schema_invalid / ValidationError — non-transient: arxiv_lookup
+        wouldn't help with a malformed s2 response (it's an s2 contract bug).
+      - ToolRoleDenied / unclassified errors — programmer bugs; surface
+        unmasked rather than silently rerouting.
+      - 4xx that's not 429 (e.g., 403): config or upstream-policy issue, not
+        a transient throttling event; arxiv won't fix it.
+    """
+    classified = classify_exception(exc)
+    if classified in _FALLBACKABLE_S2_ERROR_CATEGORIES:
+        return True
+    # httpx network/transport errors don't carry a status code so
+    # classify_exception returns None. Late-import to keep this module's
+    # import surface unchanged when httpx isn't yet imported in the call chain.
+    try:
+        import httpx
+    except ImportError:
+        return False
+    # httpx.RequestError covers ConnectError, ReadTimeout, NetworkError, etc.
+    # but EXCLUDES HTTPStatusError (which classify_exception already handled).
+    return isinstance(exc, httpx.RequestError) and not isinstance(
+        exc, httpx.HTTPStatusError
+    )
+
+
+def _fetch_abstract(gateway: ToolGateway, paper_id: str) -> str | None:
+    """Fetch paper abstract via s2_lookup, with arxiv_lookup fallback.
+
+    Decision tree:
+      1. `web:` papers → return None (W2 doesn't re-fetch web; intentional skip).
+      2. Try s2_lookup. On success (200 + abstract present) return abstract.
+      3. On s2_lookup raising a transient error (429/5xx/transport) AND
+         paper_id starts with `arxiv:`, try arxiv_lookup as fallback.
+         If fallback succeeds, return its abstract. If fallback ALSO raises,
+         re-raise the original s2 error (richer signal for classify_exception
+         and the caller's tool_calls audit — s2 is the primary tool).
+      4. On s2_lookup raising a non-fallbackable error (4xx not 429,
+         schema_invalid, ToolRoleDenied), or paper_id NOT prefixed `arxiv:`,
+         re-raise unchanged.
+      5. On s2_lookup returning paper=None or empty abstract, return None
+         (paper genuinely lacks abstract; don't fallback — fallback is for
+         transport-layer failures only, not for missing-abstract content).
+
+    The caller (Deep's per-section fetch loop) catches exceptions, calls
+    classify_exception, and decides retry / skip-section semantics.
+
+    Per Task 7 polish 5 (2026-05-02): Semantic Scholar API key was rejected
+    so anonymous quota throttles dev IP. arxiv_lookup is the W2 fallback.
+    See spike log + README W2 status for the design pivot.
+    """
+    if paper_id.startswith("web:"):
+        return None
+    try:
+        return _fetch_abstract_via_s2(gateway, paper_id)
+    except Exception as s2_exc:
+        if _is_fallbackable_s2_error(s2_exc) and paper_id.startswith("arxiv:"):
+            try:
+                return _fetch_abstract_via_arxiv(gateway, paper_id)
+            except Exception:
+                # Both s2 and arxiv failed; re-raise the s2 error so the
+                # caller's classify_exception sees the richer signal (s2
+                # is the primary tool; arxiv is just the fallback hint).
+                raise s2_exc from None
+        raise
 
 
 def make_researcher_deep_node(
