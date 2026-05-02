@@ -268,6 +268,155 @@ def test_s2_lookup_paper_id_only_accepts_arxiv_or_s2_prefix(respx_mock):
         s2_lookup.lookup_paper(paper_id="web:abc123")
 
 
+# ---- s2_lookup retry-on-429 + SEMANTIC_SCHOLAR_API_KEY ----
+
+def test_s2_lookup_retries_on_429_then_succeeds_on_200(respx_mock, monkeypatch):
+    """First 429 (no Retry-After) → backoff 1.0s → second 200 succeeds."""
+    recorded_sleeps: list[float] = []
+    monkeypatch.setattr(
+        "surveyforge.tools.s2_lookup.time.sleep",
+        lambda s: recorded_sleeps.append(s),
+    )
+    respx_mock.get(f"{s2_lookup.S2_API_BASE}/paper/arXiv:2401.12345").mock(
+        side_effect=[
+            httpx.Response(429),  # no Retry-After → use DEFAULT_BACKOFF_SECONDS[0]=1.0
+            httpx.Response(200, json=S2_PAPER_FIXTURE),
+        ]
+    )
+    result = s2_lookup.lookup_paper(paper_id="arxiv:2401.12345")
+    assert result["paper"]["s2_paper_id"] == "abc123"
+    assert recorded_sleeps == [1.0]
+
+
+def test_s2_lookup_retries_use_retry_after_header_when_present(respx_mock, monkeypatch):
+    """`Retry-After: 7` overrides DEFAULT_BACKOFF_SECONDS[0]=1.0."""
+    recorded_sleeps: list[float] = []
+    monkeypatch.setattr(
+        "surveyforge.tools.s2_lookup.time.sleep",
+        lambda s: recorded_sleeps.append(s),
+    )
+    respx_mock.get(f"{s2_lookup.S2_API_BASE}/paper/arXiv:2401.12345").mock(
+        side_effect=[
+            httpx.Response(429, headers={"Retry-After": "7"}),
+            httpx.Response(200, json=S2_PAPER_FIXTURE),
+        ]
+    )
+    result = s2_lookup.lookup_paper(paper_id="arxiv:2401.12345")
+    assert result["paper"]["s2_paper_id"] == "abc123"
+    assert recorded_sleeps == [7.0]
+
+
+def test_s2_lookup_exhausted_retries_raises_http_error(respx_mock, monkeypatch):
+    """4 consecutive 429s (1 initial + 3 retries) → HTTPStatusError raised.
+
+    Sleep called 3 times with the full DEFAULT_BACKOFF_SECONDS sequence
+    (1.0, 2.0, 4.0) — no sleep after the final attempt because we give up
+    instead of waiting before raising.
+    """
+    recorded_sleeps: list[float] = []
+    monkeypatch.setattr(
+        "surveyforge.tools.s2_lookup.time.sleep",
+        lambda s: recorded_sleeps.append(s),
+    )
+    respx_mock.get(f"{s2_lookup.S2_API_BASE}/paper/arXiv:2401.12345").mock(
+        side_effect=[
+            httpx.Response(429),
+            httpx.Response(429),
+            httpx.Response(429),
+            httpx.Response(429),
+        ]
+    )
+    with pytest.raises(httpx.HTTPStatusError):
+        s2_lookup.lookup_paper(paper_id="arxiv:2401.12345")
+    assert recorded_sleeps == [1.0, 2.0, 4.0]
+
+
+def test_s2_lookup_exhausted_retries_through_gateway_records_provider_429(
+    conn: psycopg.Connection, respx_mock, monkeypatch,
+):
+    """All-429 scenario via ToolGateway: tool_calls row tagged provider_429."""
+    monkeypatch.setattr(
+        "surveyforge.tools.s2_lookup.time.sleep",
+        lambda s: None,
+    )
+    respx_mock.get(f"{s2_lookup.S2_API_BASE}/paper/arXiv:2401.12345").mock(
+        side_effect=[
+            httpx.Response(429),
+            httpx.Response(429),
+            httpx.Response(429),
+            httpx.Response(429),
+        ]
+    )
+    run_id = _make_run(conn)
+    gw = ToolGateway(conn, run_id)
+    s2_lookup.register(gw)
+    with pytest.raises(httpx.HTTPStatusError):
+        gw.call(AgentRole.RESEARCHER_DEEP, "s2_lookup", paper_id="arxiv:2401.12345")
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT error_category FROM tool_calls WHERE run_id = %s",
+            (run_id,),
+        )
+        rows = cur.fetchall()
+    assert rows == [("provider_429",)]
+
+
+def test_s2_lookup_404_does_not_retry(respx_mock, monkeypatch):
+    """404 returns `{"paper": None}` immediately — never retried (paper-missing
+    is a stable signal, not a transient failure)."""
+    recorded_sleeps: list[float] = []
+    monkeypatch.setattr(
+        "surveyforge.tools.s2_lookup.time.sleep",
+        lambda s: recorded_sleeps.append(s),
+    )
+    respx_mock.get(f"{s2_lookup.S2_API_BASE}/paper/arXiv:9999.00000").mock(
+        return_value=httpx.Response(404, json={"error": "not found"})
+    )
+    result = s2_lookup.lookup_paper(paper_id="arxiv:9999.00000")
+    assert result["paper"] is None
+    assert recorded_sleeps == []
+
+
+def test_s2_lookup_500_does_not_retry(respx_mock, monkeypatch):
+    """5xx is NOT retried at this layer — that belongs to a higher-level
+    resilience policy. We raise immediately so the gateway can tag it
+    provider_5xx for downstream routing."""
+    recorded_sleeps: list[float] = []
+    monkeypatch.setattr(
+        "surveyforge.tools.s2_lookup.time.sleep",
+        lambda s: recorded_sleeps.append(s),
+    )
+    respx_mock.get(f"{s2_lookup.S2_API_BASE}/paper/arXiv:2401.12345").mock(
+        return_value=httpx.Response(500, text="internal error")
+    )
+    with pytest.raises(httpx.HTTPStatusError):
+        s2_lookup.lookup_paper(paper_id="arxiv:2401.12345")
+    assert recorded_sleeps == []
+
+
+def test_s2_lookup_passes_x_api_key_header_when_env_set(respx_mock, monkeypatch):
+    """`SEMANTIC_SCHOLAR_API_KEY=test-key-123` → request carries
+    `x-api-key: test-key-123` header (lifts anonymous-IP 1-RPS limit)."""
+    monkeypatch.setenv("SEMANTIC_SCHOLAR_API_KEY", "test-key-123")
+    route = respx_mock.get(f"{s2_lookup.S2_API_BASE}/paper/arXiv:2401.12345").mock(
+        return_value=httpx.Response(200, json=S2_PAPER_FIXTURE)
+    )
+    s2_lookup.lookup_paper(paper_id="arxiv:2401.12345")
+    sent_request = route.calls.last.request
+    assert sent_request.headers.get("x-api-key") == "test-key-123"
+
+
+def test_s2_lookup_no_x_api_key_header_when_env_missing(respx_mock, monkeypatch):
+    """No env var → no `x-api-key` header (fall back to anonymous request)."""
+    monkeypatch.delenv("SEMANTIC_SCHOLAR_API_KEY", raising=False)
+    route = respx_mock.get(f"{s2_lookup.S2_API_BASE}/paper/arXiv:2401.12345").mock(
+        return_value=httpx.Response(200, json=S2_PAPER_FIXTURE)
+    )
+    s2_lookup.lookup_paper(paper_id="arxiv:2401.12345")
+    sent_request = route.calls.last.request
+    assert "x-api-key" not in sent_request.headers
+
+
 # ---- web_search ----
 
 SERPER_FIXTURE = {

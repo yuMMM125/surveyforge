@@ -7,6 +7,8 @@ rather than raising, so callers can distinguish missing-paper from network-error
 """
 from __future__ import annotations
 
+import os
+import time
 from typing import Any
 
 import httpx
@@ -21,6 +23,10 @@ TOOL_NAME = "s2_lookup"
 TOOL_VERSION = "0.1.0"
 
 _S2_FIELDS = "paperId,externalIds,title,abstract,authors,year,venue,citationCount"
+
+SEMANTIC_SCHOLAR_API_KEY_ENV = "SEMANTIC_SCHOLAR_API_KEY"
+MAX_RETRY_ATTEMPTS = 3                      # retry up to 3 times on 429
+DEFAULT_BACKOFF_SECONDS = (1.0, 2.0, 4.0)   # used when Retry-After header absent
 
 
 class S2LookupInput(BaseModel):
@@ -75,6 +81,39 @@ class S2LookupOutput(BaseModel):
     paper: S2Paper | None
 
 
+def _compute_retry_delay(response: httpx.Response, attempt_index: int) -> float:
+    """Pick retry delay for a 429 response.
+
+    Prefer the server-provided `Retry-After` header (RFC 7231: integer seconds
+    OR HTTP-date — we only handle integer-seconds, the common case). Fall back
+    to exponential backoff `DEFAULT_BACKOFF_SECONDS[attempt_index]`. Negative
+    or non-numeric Retry-After values are ignored — fall back too.
+    """
+    retry_after_raw = response.headers.get("Retry-After")
+    if retry_after_raw is not None:
+        try:
+            ra = float(retry_after_raw)
+            if ra >= 0:
+                return ra
+        except ValueError:
+            pass  # non-numeric / HTTP-date → fall through
+    return DEFAULT_BACKOFF_SECONDS[attempt_index]
+
+
+def _build_request_headers() -> dict[str, str]:
+    """Inject `x-api-key` if `SEMANTIC_SCHOLAR_API_KEY` env var is set.
+
+    SS Graph API v1 takes the key via `x-api-key` header. If unset, the
+    request goes anonymous (1 RPS shared rate limit per IP — the failure
+    mode that motivated this retry logic).
+    """
+    headers: dict[str, str] = {}
+    api_key = os.environ.get(SEMANTIC_SCHOLAR_API_KEY_ENV)
+    if api_key:
+        headers["x-api-key"] = api_key
+    return headers
+
+
 def _build_s2_url(paper_id: str) -> str:
     """Translate prefixed paper_id to S2 API path component.
 
@@ -92,16 +131,42 @@ def _build_s2_url(paper_id: str) -> str:
 
 
 def lookup_paper(paper_id: str) -> dict[str, Any]:
-    """Direct impl: GET S2 paper metadata; return dict matching S2LookupOutput."""
+    """Direct impl: GET S2 paper metadata; return dict matching S2LookupOutput.
+
+    Retry policy (per Task 7 polish 3, 2026-05-02):
+      - HTTP 429 (rate limit): retry up to MAX_RETRY_ATTEMPTS times. Delay
+        comes from `Retry-After` header if numeric, else exp backoff
+        (1s, 2s, 4s). After all retries exhausted, raise the last response's
+        HTTPStatusError so ToolGateway tags it provider_429.
+      - HTTP 404 (paper not found): return `{"paper": None}` — caller can
+        distinguish missing-paper from network-error. NEVER retry 404.
+      - Other 4xx / 5xx / network errors: raise immediately. NO retry —
+        retrying these is either incorrect (4xx is client-side wrong) or
+        belongs to a higher-level resilience policy (5xx).
+      - HTTP 200: parse and return.
+
+    `SEMANTIC_SCHOLAR_API_KEY` env var, if set, is sent via `x-api-key`
+    header to lift the anonymous-IP 1-RPS rate limit.
+    """
     # Validate input via Pydantic schema — keeps the constraint enforced even when
     # callers invoke the impl directly (not just via ToolGateway).
     validated = S2LookupInput(paper_id=paper_id)
     url = _build_s2_url(validated.paper_id)
+    headers = _build_request_headers()
+
     with httpx.Client(timeout=30.0) as client:
-        response = client.get(url, params={"fields": _S2_FIELDS})
+        for attempt in range(MAX_RETRY_ATTEMPTS + 1):  # 1 initial + MAX retries
+            response = client.get(url, params={"fields": _S2_FIELDS}, headers=headers)
+            if response.status_code != 429:
+                break  # 200 / 404 / other — exit retry loop
+            if attempt >= MAX_RETRY_ATTEMPTS:
+                break  # exhausted retries; fall through to raise_for_status below
+            delay = _compute_retry_delay(response, attempt)
+            time.sleep(delay)
+
     if response.status_code == 404:
         return {"paper": None}
-    response.raise_for_status()
+    response.raise_for_status()  # raises HTTPStatusError on the final 429 (after retries) or other non-2xx
     data = response.json()
     s2_paper_id = data["paperId"]
     return {
