@@ -201,14 +201,9 @@ def test_w2_end_to_end_multi_section_draft_for_rlhf(
                 f"first3_paper_ids={sample_paper_ids}"
             )
 
-        # (3) deep_read_queue and candidate_pool (Wide → Deep handoff)
+        # (3) deep_read_queue (Wide → Deep handoff)
         deep_queue = result.get("deep_read_queue", [])
         print(f"[w2-e2e] deep_read_queue len={len(deep_queue)} sample={deep_queue[:5]}")
-        candidate_pool = result.get("candidate_pool", {}) or {}
-        print(
-            "[w2-e2e] candidate_pool per_section_counts="
-            + str({k: len(v) for k, v in candidate_pool.items()})
-        )
 
         # (4) tool_calls breakdown grouped by error_category / cache_hit / truncated
         with psycopg.connect(postgres_url) as c, c.cursor() as cur:
