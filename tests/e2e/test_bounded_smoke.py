@@ -5,6 +5,14 @@ multi-section nondeterminism of `test_section_draft_live.py` (now manual)
 by mocking Planner to return a single fixed section, then exercising real
 Wide + Deep + Synth-stub + Write-stub end-to-end.
 
+Topic choice ("long-context LLM benchmarks"): identical to the topic exercised
+by `tests/agents/integration/test_researcher_wide_live.py`, which PASSES
+reliably (~54s) on the current SJTU LLM gateway state. Broad / contested
+topics like "Survey of RLHF progress" caused Wide's 8-turn ReAct to
+forced-exit on every section in earlier runs (see `_private/spikes/...`
+2026-05-02 W2 verification log). RLHF + multi-section is now demoted to
+the manual / opportunistic full e2e in `test_section_draft_live.py`.
+
 Why this design (Task 7 polish, 2026-05-02):
 - W2 stub Synth/Write don't benefit from multi-section coverage (drafts are
   one-per-section bullet markdown either way; integration value is the same
@@ -104,15 +112,21 @@ def test_w2_bounded_smoke_single_section_e2e(
         run_id = config["configurable"]["thread_id"]
         with _tx() as conn:
             _RM(conn).update_stage(run_id, "planning")
+        # Topic + section content match `test_researcher_wide_live.py` (which
+        # PASSES reliably ~54s on current gateway state). Broad-topic RLHF
+        # variants showed Wide forced-exit even on single-section runs; see
+        # the module docstring for the full rationale.
         state["outline"] = [
             PlannerSection(
                 section_id="S1",
-                title="Background",
+                title="Long-context benchmark methodologies",
                 research_questions=[
-                    "What is RLHF?",
-                    "Why does it matter for AI alignment?",
+                    "What benchmarks evaluate context length scaling?",
+                    "How do they measure recall at long context?",
                 ],
-                must_find_evidence=["Original RLHF paper"],
+                must_find_evidence=[
+                    "needle-in-haystack benchmark or RULER or LongBench"
+                ],
             ).model_dump()
         ]
         return state
@@ -125,13 +139,13 @@ def test_w2_bounded_smoke_single_section_e2e(
     try:
         with transaction() as conn:
             run = RunManager(conn).create(
-                topic="Survey of RLHF progress",
+                topic="long-context LLM benchmarks",
                 idempotency_key=f"e2e-bounded-{time.time_ns()}",
             )
 
         # Real Wide + Deep + Synth-stub + Write-stub; only Planner is mocked.
         graph = build_graph()
-        initial_state = make_initial_state(topic="Survey of RLHF progress")
+        initial_state = make_initial_state(topic="long-context LLM benchmarks")
         config: RunnableConfig = {"configurable": {"thread_id": run.run_id}}
 
         wall_start = time.perf_counter()
@@ -177,20 +191,53 @@ def test_w2_bounded_smoke_single_section_e2e(
         deep_queue = result.get("deep_read_queue", [])
         print(f"[w2-bounded] deep_read_queue len={len(deep_queue)} sample={deep_queue[:5]}")
 
+        # Tool_calls breakdown grouped by error_category / cache_hit / truncated
+        # so we can distinguish s2 429 from LLM 429 from arxiv timeouts when the
+        # provider_429 flag appears on runs.error_category.
         with psycopg.connect(postgres_url) as c, c.cursor() as cur:
             cur.execute(
-                "SELECT tool_name, agent_role, COUNT(*) "
+                "SELECT tool_name, agent_role, error_category, cache_hit, truncated, COUNT(*) "
                 "FROM tool_calls WHERE run_id = %s "
-                "GROUP BY tool_name, agent_role "
-                "ORDER BY tool_name, agent_role",
+                "GROUP BY tool_name, agent_role, error_category, cache_hit, truncated "
+                "ORDER BY tool_name, agent_role, error_category NULLS FIRST",
                 (run.run_id,),
             )
             tool_rows = cur.fetchall()
-        print("[w2-bounded] tool_calls breakdown (tool_name, agent_role, count):")
+        print(
+            "[w2-bounded] tool_calls breakdown "
+            "(tool_name, agent_role, error_category, cache_hit, truncated, count):"
+        )
         for row in tool_rows:
             print(f"  {row}")
         if not tool_rows:
             print("  (no tool_calls rows for this run)")
+
+        # S2_lookup output samples — paper presence + abstract length per row.
+        # Helps distinguish "s2 returned but no abstract" from "s2 429" from
+        # "Deep never reached LLM call" failure modes.
+        with psycopg.connect(postgres_url) as c, c.cursor() as cur:
+            cur.execute(
+                "SELECT error_category, output FROM tool_calls "
+                "WHERE run_id = %s AND tool_name = 's2_lookup' "
+                "ORDER BY created_at LIMIT 3",
+                (run.run_id,),
+            )
+            s2_samples = cur.fetchall()
+        print("[w2-bounded] s2_lookup samples (first 3 by created_at):")
+        for i, (err_cat, output) in enumerate(s2_samples):
+            if output is None:
+                print(f"  sample {i}: error_category={err_cat!r} output=NULL")
+                continue
+            paper_id = output.get("paper_id") if isinstance(output, dict) else None
+            abstract = output.get("abstract") if isinstance(output, dict) else None
+            abstract_len = len(abstract) if isinstance(abstract, str) else None
+            top_keys = list(output.keys())[:6] if isinstance(output, dict) else type(output).__name__
+            print(
+                f"  sample {i}: error_category={err_cat!r} "
+                f"paper_id={paper_id!r} abstract_len={abstract_len} top_keys={top_keys}"
+            )
+        if not s2_samples:
+            print("  (no s2_lookup rows for this run — Deep never invoked s2_lookup)")
 
         with psycopg.connect(postgres_url) as c, c.cursor() as cur:
             cur.execute(
