@@ -10,6 +10,7 @@ import argparse
 import sys
 import uuid
 
+from dotenv import load_dotenv
 from langchain_core.runnables import RunnableConfig
 
 from surveyforge.graph import build_graph
@@ -24,6 +25,16 @@ EXIT_USAGE = 3
 
 
 def main(argv: list[str] | None = None) -> int:
+    """SurveyForge CLI entry point.
+
+    Calls `load_dotenv()` at startup so the user can put SJTU_MODELS_API_KEY,
+    LANGFUSE_*, SURVEYFORGE_DATABASE_URL etc. in `.env` instead of exporting
+    them every shell session. NOTE: this dotenv load is process-local — it
+    does NOT export to the parent shell, and it does NOT propagate to other
+    Python processes (e.g., the schema-init one-liner in Task 7 Step 7.0b(c)
+    has its own `load_dotenv()`).
+    """
+    load_dotenv()  # auto-load .env so users don't need to export vars every session
     parser = _build_parser()
     args = parser.parse_args(argv)
 
@@ -99,6 +110,15 @@ def _cmd_run(topic: str, idempotency_key: str | None) -> int:
     print(f"run_id: {run.run_id}")
     drafts = result.get("section_drafts", {})
     print(f"sections: {sorted(drafts.keys())}")
+    # AD #13: show each draft body so the deliverable "viewable section draft"
+    # is satisfied literally. Drafts can be long; readers can pipe to a pager
+    # or redirect to a file. Empty drafts (sections with no evidence) still
+    # print the header + "_No evidence available..._" fallback line.
+    for section_id in sorted(drafts.keys()):
+        print("---")
+        print(f"[section_id: {section_id}]")
+        print()
+        print(drafts[section_id])
     return EXIT_OK
 
 

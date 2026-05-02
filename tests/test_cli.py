@@ -45,6 +45,12 @@ def test_cli_run_creates_run_and_invokes_graph(
     out = capsys.readouterr().out
     assert "run_id: run_" in out
     assert "sections: ['S1']" in out
+    # AD #13 (Task 7): success path must print the draft body, not just
+    # the section keys. Without this, the spec § 8 "viewable section draft"
+    # deliverable is not met.
+    assert "[section_id: S1]" in out
+    assert "## Background" in out
+    assert "claim [E-1]" in out
 
 
 def test_cli_run_idempotency_conflict_returns_usage_error(
