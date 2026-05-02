@@ -87,9 +87,17 @@ def deep_node_factory(monkeypatch: pytest.MonkeyPatch):
         fake_structured_call,
     )
 
-    # Mock abstract fetch — caller sets abstract_fetches[paper_id] = "abstract" or None
+    # Mock abstract fetch — caller sets abstract_fetches[paper_id] = "abstract" or None.
+    # Mirror real `_fetch_abstract`: web: prefix returns None (W2 doesn't fetch web).
+    # Without this mirror, web: papers would get a fake abstract and end up in
+    # `abstracts.keys()` (= input_paper_ids), breaking the new strict coverage
+    # check (`paper_ids_processed` from canned output wouldn't include them).
     def fake_fetch_abstract(gateway, paper_id):
-        return abstract_fetches.get(paper_id, "default abstract for testing")
+        if paper_id in abstract_fetches:
+            return abstract_fetches[paper_id]
+        if paper_id.startswith("web:"):
+            return None
+        return "default abstract for testing"
 
     monkeypatch.setattr(
         "surveyforge.agents.researcher_deep._fetch_abstract",
@@ -347,12 +355,14 @@ def test_deep_node_per_card_section_id_mismatch_drops_card_only(
 
 # ---- per-card paper_id NOT in input drops card ----
 
-def test_deep_node_drops_card_with_paper_id_not_in_section_input(
+def test_deep_node_rejects_output_with_hallucinated_card_paper_id(
     conn: psycopg.Connection, deep_node_factory, patch_agent_transaction
 ):
     """LLM may hallucinate a paper_id or reference a different section's paper.
-    Deep must drop those cards (defends against cross-section pollution).
-    Architecture Decision #7c."""
+    With the Codex P1 subset check on `card_paper_ids.issubset(input_paper_ids)`,
+    a hallucinated card paper_id rejects the WHOLE output as schema_invalid
+    (stricter than the previous per-card drop). Architecture Decision #7c +
+    Codex P1 subset hardening."""
     patch_agent_transaction("surveyforge.agents.researcher_deep")
     output = _canned_deep_output(section_id="S1", paper_ids=["arxiv:1706.03741"], n_cards=2)
     # Second card claims a paper_id NOT in section input
@@ -361,16 +371,77 @@ def test_deep_node_drops_card_with_paper_id_not_in_section_input(
     run_id = _make_run(conn)
     state = _state_with_handoff("arxiv:1706.03741")  # input = arxiv:1706.03741 only
     config: RunnableConfig = {"configurable": {"thread_id": run_id}}
-    node(state, config)
+    result = node(state, config)
 
+    # WHOLE output rejected — zero evidence persisted
     with conn.cursor() as cur:
         cur.execute(
             "SELECT paper_id FROM evidence_items WHERE run_id = %s",
             (run_id,),
         )
         paper_ids = {row[0] for row in cur.fetchall()}
-    assert paper_ids == {"arxiv:1706.03741"}  # only the input paper persisted
+    assert paper_ids == set()
     assert "arxiv:hallucinated.1" not in paper_ids
+    # error_category recorded as schema_invalid; paper stays in queue for retry
+    rm = RunManager(conn)
+    assert rm.get(run_id).error_category == "schema_invalid"
+    assert "arxiv:1706.03741" in result["deep_read_queue"]
+
+
+def test_deep_node_paper_ids_processed_must_cover_input_papers(
+    conn: psycopg.Connection, deep_node_factory, patch_agent_transaction
+):
+    """If LLM returns valid output but `paper_ids_processed` is a STRICT SUBSET
+    of input papers (some papers silently unreported), reject the whole output
+    as schema_invalid + ALL section papers stay in deep_read_queue. Without
+    this check, unreported papers would silently disappear (Codex P1)."""
+    patch_agent_transaction("surveyforge.agents.researcher_deep")
+
+    # 2 input papers, but LLM only reports 1 in paper_ids_processed
+    state = make_initial_state(topic="x")
+    state["outline"] = _outline()
+    state["section_notes"] = {
+        "S1": [
+            {"paper_id": "arxiv:p1", "title": "P1", "source": "arxiv",
+             "why_relevant": "x", "handoff_to_deep": True},
+            {"paper_id": "arxiv:p2", "title": "P2", "source": "arxiv",
+             "why_relevant": "x", "handoff_to_deep": True},
+        ]
+    }
+    state["deep_read_queue"] = ["arxiv:p1", "arxiv:p2"]
+
+    bad_output = {
+        "section_id": "S1",
+        "paper_ids_processed": ["arxiv:p1"],  # ONLY 1 of 2 — coverage violation
+        "evidence_cards": [{
+            "evidence_id": "ignored",
+            "paper_id": "arxiv:p1",
+            "section_id": "S1",
+            "claim": "Claim",
+            "source_span": "quote",
+            "confidence": 0.9,
+        }],
+        "insufficient_evidence_paper_ids": [],
+    }
+    node, _, _ = deep_node_factory(bad_output)
+
+    run_id = _make_run(conn)
+    config: RunnableConfig = {"configurable": {"thread_id": run_id}}
+    result = node(state, config)
+
+    # No evidence persisted (whole output rejected at coverage gate)
+    with conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM evidence_items WHERE run_id = %s", (run_id,))
+        assert cur.fetchone() == (0,)
+
+    # error_category = schema_invalid
+    rm = RunManager(conn)
+    assert rm.get(run_id).error_category == "schema_invalid"
+
+    # BOTH papers stay in queue (the unreported one + the reported one — they're
+    # all retry-eligible because the section's output got rejected)
+    assert "arxiv:p1" in result["deep_read_queue"]
+    assert "arxiv:p2" in result["deep_read_queue"]
 
 
 # ---- multi-section (real test, NOT placeholder) ----
@@ -722,3 +793,74 @@ def test_deep_node_real_gateway_writes_evidence_items(
     assert "Reward modeling" in claim
     assert confidence == pytest.approx(0.95)
     assert created_by == "researcher_deep"
+
+
+def test_deep_node_real_gateway_preserves_tool_calls_audit_on_503(
+    conn: psycopg.Connection, monkeypatch, patch_agent_transaction, respx_mock,
+):
+    """When s2_lookup raises httpx 503, the failed tool_calls audit row MUST
+    persist (not get rolled back when the exception propagates). Codex P1:
+    the original code did `try/except` OUTSIDE `with transaction()`, which
+    triggered rollback of the audit insert. Fix: catch INSIDE the transaction.
+
+    Uses real ToolGateway + real `_register_deep_tools` + respx-mocked HTTP.
+    Asserts: runs.error_category=provider_5xx AND tool_calls row exists with
+    tool_name=s2_lookup + error_category=provider_5xx."""
+    import httpx
+
+    from surveyforge.agents.researcher_deep import make_researcher_deep_node
+    from surveyforge.tools import s2_lookup
+
+    patch_agent_transaction("surveyforge.agents.researcher_deep")
+
+    # Strip proxy env (see other real-gateway tests)
+    for var in ("ALL_PROXY", "HTTP_PROXY", "HTTPS_PROXY", "all_proxy", "http_proxy", "https_proxy"):
+        monkeypatch.delenv(var, raising=False)
+
+    # Mock s2 API to return 503 for the lookup
+    respx_mock.get(f"{s2_lookup.S2_API_BASE}/paper/arXiv:transient.1").mock(
+        return_value=httpx.Response(503, json={"error": "service unavailable"})
+    )
+
+    router = LLMRouter({
+        AgentRole.RESEARCHER_DEEP: RoleBinding(
+            provider=ProviderName.MINIMAX, model="minimax",
+        ),
+    })
+    monkeypatch.setattr(router, "get_llm", MagicMock(return_value=MagicMock()))
+    monkeypatch.setattr(
+        "surveyforge.agents.researcher_deep.structured_call",
+        MagicMock(return_value=_canned_deep_output()),
+    )
+
+    # Real _register_deep_tools — do NOT monkeypatch
+    registry = PromptRegistry()
+    budget_manager = BudgetManager()
+    node = make_researcher_deep_node(router, registry, budget_manager)
+
+    run_id = _make_run(conn)
+    state = _state_with_handoff("arxiv:transient.1")
+    config: RunnableConfig = {"configurable": {"thread_id": run_id}}
+    result = node(state, config)
+
+    # runs.error_category recorded
+    rm = RunManager(conn)
+    assert rm.get(run_id).error_category == "provider_5xx"
+
+    # Paper stays in queue (transient — retryable)
+    assert "arxiv:transient.1" in result["deep_read_queue"]
+
+    # Tool_calls audit row persisted (the load-bearing assertion: Codex P1
+    # caught that this row was being rolled back when exception propagated
+    # out of the transaction)
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT tool_name, error_category, agent_role FROM tool_calls "
+            "WHERE run_id = %s ORDER BY created_at",
+            (run_id,),
+        )
+        rows = cur.fetchall()
+    s2_rows = [r for r in rows if r[0] == "s2_lookup"]
+    assert len(s2_rows) == 1
+    assert s2_rows[0][1] == "provider_5xx"  # audit captured the classification
+    assert s2_rows[0][2] == "researcher_deep"

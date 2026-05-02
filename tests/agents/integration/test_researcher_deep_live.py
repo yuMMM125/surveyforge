@@ -70,7 +70,7 @@ def test_researcher_deep_live_extracts_evidence_for_rlhf_paper(
         section = PlannerSection(
             section_id="S1",
             title="Background",
-            research_questions=["What is RLHF?"],
+            research_questions=["What is RLHF?", "Why does it matter for AI alignment?"],
             must_find_evidence=["Original RLHF paper"],
         )
         state = make_initial_state(topic="Survey of RLHF")

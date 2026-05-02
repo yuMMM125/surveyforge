@@ -176,20 +176,32 @@ def make_researcher_deep_node(
             # marked retry-eligible (papers stay in deep_read_queue). web: papers
             # legitimately return None.
             abstracts: dict[str, str] = {}
-            try:
-                with transaction() as conn:
-                    fetch_gateway = ToolGateway(conn, run_id)
-                    _register_deep_tools(fetch_gateway, conn)
-                    for pid in paper_ids:
+            fetch_exc: Exception | None = None
+            with transaction() as conn:
+                fetch_gateway = ToolGateway(conn, run_id)
+                _register_deep_tools(fetch_gateway, conn)
+                for pid in paper_ids:
+                    try:
                         abstract = _fetch_abstract(fetch_gateway, pid)
-                        if abstract is not None:
-                            abstracts[pid] = abstract
-            except Exception as exc:
+                    except Exception as exc:
+                        # Catch INSIDE the transaction so the gateway's failure
+                        # tool_calls row commits — exception propagating out
+                        # would trigger rollback and lose the audit. Pattern
+                        # matches Wide's per-turn transaction lesson.
+                        fetch_exc = exc
+                        break
+                    if abstract is not None:
+                        abstracts[pid] = abstract
+            # Transaction has committed normally (or rolled back only if exit
+            # raised — which the inner try/except prevents). tool_calls audit
+            # rows for both successful and failed fetches are preserved.
+
+            if fetch_exc is not None:
                 # Classify transport-level errors; programmer bugs (e.g.,
                 # ToolRoleDenied) propagate unmasked.
-                classified = classify_exception(exc)
+                classified = classify_exception(fetch_exc)
                 if classified is None:
-                    raise
+                    raise fetch_exc
                 last_error_category = classified.value
                 continue  # papers stay in deep_read_queue (retryable)
 
@@ -260,16 +272,43 @@ def make_researcher_deep_node(
                 last_error_category = SCHEMA_INVALID
                 continue
 
-            # Section completed successfully (LLM produced validated output).
-            # Mark all input papers as processed — whether the LLM emitted
-            # evidence cards for them or marked them insufficient, we have the
-            # LLM's answer and the paper doesn't need a retry. Papers without
-            # abstracts (e.g., web: in this section) were never in `abstracts.keys()`
-            # and stay in the queue (web: gets stripped at the bottom).
-            processed.update(abstracts.keys())
+            input_paper_ids = set(abstracts.keys())
+            processed_paper_ids = set(output.paper_ids_processed)
+            insufficient_paper_ids = set(output.insufficient_evidence_paper_ids)
+            card_paper_ids = {c.paper_id for c in output.evidence_cards}
+
+            # Subset validation: every paper_id the LLM mentions must come from
+            # this section's input. Defends against hallucination across all
+            # three output fields where paper_ids appear.
+            if not processed_paper_ids.issubset(input_paper_ids):
+                last_error_category = SCHEMA_INVALID
+                continue
+            if not insufficient_paper_ids.issubset(input_paper_ids):
+                last_error_category = SCHEMA_INVALID
+                continue
+            if not card_paper_ids.issubset(input_paper_ids):
+                last_error_category = SCHEMA_INVALID
+                continue
+
+            # Coverage validation (strict): the LLM MUST report on every input
+            # paper. If `paper_ids_processed` doesn't cover `input_paper_ids`,
+            # unreported papers would silently disappear from deep_read_queue
+            # — bug class found by Codex P1. Treat as schema_invalid; papers
+            # stay in queue for retry.
+            if processed_paper_ids != input_paper_ids:
+                last_error_category = SCHEMA_INVALID
+                continue
+
+            # All checks passed. Section completed successfully (LLM produced
+            # validated output covering every input paper). Mark all input
+            # papers as processed — whether the LLM emitted evidence cards for
+            # them or marked them insufficient, we have the LLM's answer and
+            # the paper doesn't need a retry. Papers without abstracts (e.g.,
+            # web: in this section) were never in `abstracts.keys()` and stay
+            # in the queue (web: gets stripped at the bottom).
+            processed.update(input_paper_ids)
 
             # Persist EvidenceCards via real evidence_store_write
-            input_paper_ids = set(abstracts.keys())  # for per-card paper_id validation
             section_evidence_count = 0
             with transaction() as conn:
                 write_gateway = ToolGateway(conn, run_id)
@@ -278,7 +317,9 @@ def make_researcher_deep_node(
                     # Per-card validation (Decision #7b + #7c):
                     # - card.section_id must match current section
                     # - card.paper_id must be one we actually fed in (defends
-                    #   against LLM hallucination / cross-section pollution)
+                    #   against LLM hallucination / cross-section pollution).
+                    #   Redundant given upstream `card_paper_ids.issubset(...)`
+                    #   check; kept as defense in depth.
                     if card.section_id != section_id:
                         continue
                     if card.paper_id not in input_paper_ids:
