@@ -563,6 +563,46 @@ def test_arxiv_lookup_handles_missing_summary_in_atom(respx_mock):
     assert result["paper"]["abstract"] is None
 
 
+def test_arxiv_lookup_uses_https_endpoint():
+    """`ARXIV_API_BASE` MUST be https. arxiv enforces 301 redirect from
+    http→https as of 2026-05-02 (root cause of bounded smoke v8 failure
+    — see Task 7 polish 8 in spike log). A regression to http would only
+    fail at live integration, not unit tests, because respx mocks intercept
+    on URL match without simulating 301. This test guards the constant
+    explicitly so the regression can never escape PR review again.
+    """
+    assert arxiv_lookup.ARXIV_API_BASE.startswith("https://"), (
+        f"ARXIV_API_BASE must use https; got {arxiv_lookup.ARXIV_API_BASE!r}. "
+        "arxiv enforces http→https 301 redirect since at least 2026-05; "
+        "without `follow_redirects=True` (also enabled defensively in the "
+        "wrapper's httpx.Client) a plain http URL raises HTTPStatusError(301)."
+    )
+
+
+def test_arxiv_lookup_follows_301_redirect_defensively(respx_mock):
+    """Defensive belt-and-suspenders: even if a future arxiv URL change
+    introduces a new redirect, `follow_redirects=True` on the httpx.Client
+    keeps the wrapper working. Mock a 301 → 200 chain at the wrapper level.
+
+    Pairs with `test_arxiv_lookup_uses_https_endpoint` — the URL constant
+    + the client kwarg are both defenses against the bounded smoke v8
+    failure mode.
+    """
+    redirect_target = "https://export.arxiv.org/api/query/somewhere-else"
+    respx_mock.get(arxiv_lookup.ARXIV_API_BASE).mock(
+        return_value=httpx.Response(
+            301,
+            headers={"Location": redirect_target},
+        )
+    )
+    respx_mock.get(redirect_target).mock(
+        return_value=httpx.Response(200, content=ARXIV_LOOKUP_ATOM_FIXTURE)
+    )
+    result = arxiv_lookup.lookup_paper(paper_id="arxiv:1234.5678")
+    assert result["paper"] is not None
+    assert result["paper"]["title"] == "An Arxiv Lookup Test Paper"
+
+
 # ---- web_search ----
 
 SERPER_FIXTURE = {

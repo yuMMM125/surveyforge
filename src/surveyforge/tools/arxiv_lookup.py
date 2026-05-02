@@ -26,7 +26,12 @@ from surveyforge.llm.roles import AgentRole
 from surveyforge.runtime.tool_gateway import ToolGateway, ToolPolicy
 from surveyforge.schemas.paper_id import PaperId
 
-ARXIV_API_BASE = "http://export.arxiv.org/api/query"
+ARXIV_API_BASE = "https://export.arxiv.org/api/query"
+"""arxiv API endpoint. MUST be https: as of 2026-05-02 arxiv enforces a 301
+Moved Permanently from http → https (root cause of bounded smoke v8 failure
+— see Task 7 polish 8 in spike log). The httpx client below also enables
+`follow_redirects=True` as defensive belt-and-suspenders so future arxiv
+URL changes don't break the fallback path again."""
 TOOL_NAME = "arxiv_lookup"
 TOOL_VERSION = "0.1.0"
 
@@ -156,7 +161,7 @@ def lookup_paper(paper_id: str) -> dict[str, Any]:
     validated = ArxivLookupInput(paper_id=paper_id)
     arxiv_id = _build_arxiv_id_param(validated.paper_id)
 
-    with httpx.Client(timeout=30.0) as client:
+    with httpx.Client(timeout=30.0, follow_redirects=True) as client:
         for attempt in range(MAX_RETRY_ATTEMPTS + 1):  # 1 initial + MAX retries
             response = client.get(ARXIV_API_BASE, params={"id_list": arxiv_id})
             if response.status_code != 429:
