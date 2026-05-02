@@ -125,7 +125,7 @@ def test_w2_bounded_smoke_single_section_e2e(
     # Wire testcontainer URL into both production DB pools (runtime.db +
     # graph._make_postgres_checkpointer). Reset both so stale connections from
     # prior tests don't leak.
-    monkeypatch.setenv("SURVEYFORGE_DATABASE_URL", postgres_url)
+    monkeypatch.setenv("LITWEAVE_DATABASE_URL", postgres_url)
     from surveyforge.graph import _reset_checkpointer_pool_for_tests
     from surveyforge.runtime.db import reset_pool, transaction
     reset_pool()

@@ -28,7 +28,7 @@ def main(argv: list[str] | None = None) -> int:
     """SurveyForge CLI entry point.
 
     Calls `load_dotenv()` at startup so the user can put MODELS_API_KEY,
-    LANGFUSE_*, SURVEYFORGE_DATABASE_URL etc. in `.env` instead of exporting
+    LANGFUSE_*, LITWEAVE_DATABASE_URL etc. in `.env` instead of exporting
     them every shell session. NOTE: this dotenv load is process-local: it
     does NOT export to the parent shell, and it does NOT propagate to other
     Python processes.

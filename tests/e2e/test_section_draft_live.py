@@ -126,7 +126,7 @@ def test_w2_end_to_end_multi_section_draft_for_rlhf(
     # (RunManager / EvidenceStore / ToolGateway) and graph._make_postgres_checkpointer
     # need to land on the same Postgres. Reset both pools so neither inherits a
     # stale connection from a prior test session.
-    monkeypatch.setenv("SURVEYFORGE_DATABASE_URL", postgres_url)
+    monkeypatch.setenv("LITWEAVE_DATABASE_URL", postgres_url)
     from surveyforge.graph import _reset_checkpointer_pool_for_tests
     from surveyforge.runtime.db import reset_pool, transaction
     reset_pool()

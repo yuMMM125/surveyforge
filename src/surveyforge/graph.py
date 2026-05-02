@@ -4,7 +4,7 @@ START -> planner -> researcher_wide -> researcher_deep -> synthesize -> write ->
 
 Per Task 1 Architecture Decision #11, the graph's checkpointer is
 `langgraph.checkpoint.postgres.PostgresSaver` pointed at the same Postgres
-instance as `RunManager` (`SURVEYFORGE_DATABASE_URL`). LangGraph manages its
+instance as `RunManager` (`LITWEAVE_DATABASE_URL`). LangGraph manages its
 own checkpoint tables, separate from our spec § 2.7.2 7-table schema.
 `thread_id == run_id` (spec § 2.7.2 contract).
 
@@ -82,7 +82,7 @@ def build_graph(
         # NOTE: actual file is `config/llm_routing.yaml` (Plan #1 deliverable);
         # do NOT change to `config/routing.yaml` — it does not exist.
         path = routing_yaml_path or os.environ.get(
-            "SURVEYFORGE_ROUTING_YAML", "config/llm_routing.yaml"
+            "LITWEAVE_ROUTING_YAML", "config/llm_routing.yaml"
         )
         bindings = load_routing_yaml(path)
         router = RateLimitedRouter(bindings, RateLimitConfig())
@@ -126,7 +126,7 @@ def build_graph(
 
 
 def _make_postgres_checkpointer() -> BaseCheckpointSaver[Any]:
-    """Build PostgresSaver against `SURVEYFORGE_DATABASE_URL`.
+    """Build PostgresSaver against `LITWEAVE_DATABASE_URL`.
 
     Constructs a dedicated autocommit ConnectionPool (NOT runtime.db's pool —
     that one is non-autocommit by design). Calls `setup()` to create
@@ -175,7 +175,7 @@ def _make_postgres_checkpointer() -> BaseCheckpointSaver[Any]:
 
 def _reset_checkpointer_pool_for_tests() -> None:
     """Test-only helper: close + null the module-level pool so a new test can
-    point `SURVEYFORGE_DATABASE_URL` at a different testcontainer URL without
+    point `LITWEAVE_DATABASE_URL` at a different testcontainer URL without
     inheriting a stale connection. Production code must NOT call this."""
     global _checkpointer_pool
     if _checkpointer_pool is not None:

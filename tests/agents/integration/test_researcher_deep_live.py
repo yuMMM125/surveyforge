@@ -44,7 +44,7 @@ def test_researcher_deep_live_extracts_evidence_for_rlhf_paper(
     if _is_placeholder_key(api_key):
         pytest.skip(f"MODELS_API_KEY appears to be a placeholder ({api_key[:12]}...)")
 
-    monkeypatch.setenv("SURVEYFORGE_DATABASE_URL", postgres_url)
+    monkeypatch.setenv("LITWEAVE_DATABASE_URL", postgres_url)
     from surveyforge.runtime.db import reset_pool, transaction
     reset_pool()
 

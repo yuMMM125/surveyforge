@@ -143,11 +143,11 @@ Start PostgreSQL:
 docker compose up -d postgres
 ```
 
-For local CLI runs, make sure `SURVEYFORGE_DATABASE_URL` is set. You can put it
+For local CLI runs, make sure `LITWEAVE_DATABASE_URL` is set. You can put it
 in `.env` or export it in your shell:
 
 ```env
-SURVEYFORGE_DATABASE_URL=postgresql://surveyforge:surveyforge@localhost:5432/surveyforge
+LITWEAVE_DATABASE_URL=postgresql://surveyforge:surveyforge@localhost:5432/surveyforge
 ```
 
 ## Usage

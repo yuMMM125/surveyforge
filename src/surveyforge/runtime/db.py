@@ -1,7 +1,7 @@
 """PostgreSQL connection management for SurveyForge runtime.
 
 Per Architecture Decision (2026-05-01): PostgreSQL is the runtime backend; no
-SQLite fallback. Connection string from `SURVEYFORGE_DATABASE_URL` env var.
+SQLite fallback. Connection string from `LITWEAVE_DATABASE_URL` env var.
 Local dev uses the Postgres service in `docker-compose.yml`. Tests use
 `testcontainers` to spin up an ephemeral instance per session.
 """
@@ -16,7 +16,7 @@ from pathlib import Path
 import psycopg
 from psycopg_pool import ConnectionPool
 
-ENV_DATABASE_URL = "SURVEYFORGE_DATABASE_URL"
+ENV_DATABASE_URL = "LITWEAVE_DATABASE_URL"
 SCHEMA_FILE = Path(__file__).parent / "schema.sql"
 
 # NOTE (Task 6): the global `_pool` is mutated by `get_pool()` and `reset_pool()`

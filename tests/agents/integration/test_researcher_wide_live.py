@@ -45,7 +45,7 @@ def test_researcher_wide_live_finds_papers_for_long_context_topic(
     if _is_placeholder_key(api_key):
         pytest.skip(f"MODELS_API_KEY appears to be a placeholder ({api_key[:12]}...)")
 
-    monkeypatch.setenv("SURVEYFORGE_DATABASE_URL", postgres_url)
+    monkeypatch.setenv("LITWEAVE_DATABASE_URL", postgres_url)
     from surveyforge.runtime.db import reset_pool, transaction
     reset_pool()
 

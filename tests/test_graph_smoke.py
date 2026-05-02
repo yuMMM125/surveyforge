@@ -181,8 +181,8 @@ def test_build_graph_topology_has_5_nodes(monkeypatch):
 
 
 def test_build_graph_raises_when_database_url_missing(monkeypatch):
-    """Default checkpointer requires SURVEYFORGE_DATABASE_URL."""
-    monkeypatch.delenv("SURVEYFORGE_DATABASE_URL", raising=False)
+    """Default checkpointer requires LITWEAVE_DATABASE_URL."""
+    monkeypatch.delenv("LITWEAVE_DATABASE_URL", raising=False)
     # Reset module-level pool so a stale prior test doesn't short-circuit the
     # env-var check via the cached pool.
     from surveyforge import graph as graph_mod
@@ -194,7 +194,7 @@ def test_build_graph_raises_when_database_url_missing(monkeypatch):
         AgentRole.RESEARCHER_DEEP: RoleBinding(provider=ProviderName.MINIMAX, model="minimax"),
     })
     monkeypatch.setattr(router, "get_llm", MagicMock(return_value=MagicMock()))
-    with pytest.raises(RuntimeError, match="SURVEYFORGE_DATABASE_URL"):
+    with pytest.raises(RuntimeError, match="LITWEAVE_DATABASE_URL"):
         build_graph(
             router=router, registry=PromptRegistry(), budget_manager=BudgetManager(),
             # Don't pass checkpointer — forces _make_postgres_checkpointer()
@@ -262,7 +262,7 @@ def test_build_graph_default_postgres_checkpointer_round_trips_invoke(
     Reuses `postgres_url` (session-scoped) so testcontainer bring-up cost
     is amortized across the whole pytest session.
     """
-    monkeypatch.setenv("SURVEYFORGE_DATABASE_URL", postgres_url)
+    monkeypatch.setenv("LITWEAVE_DATABASE_URL", postgres_url)
     # Reset the module-level pool so this test gets a fresh pool against the
     # testcontainer URL (not a stale pool from a prior session/test).
     from surveyforge import graph as graph_mod

@@ -55,7 +55,7 @@ def test_planner_live_produces_outline_for_rlhf_survey(
     # Wire the testcontainer URL into the production DB code path so that the
     # run created here and the planner node's stage update go through the same
     # Postgres instance.
-    monkeypatch.setenv("SURVEYFORGE_DATABASE_URL", postgres_url)
+    monkeypatch.setenv("LITWEAVE_DATABASE_URL", postgres_url)
     from surveyforge.runtime.db import reset_pool, transaction
     reset_pool()
 
