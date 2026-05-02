@@ -60,13 +60,18 @@ Implemented and verified locally:
 - CLI draft preview support;
 - non-integration test suite, ruff, and mypy strict checks.
 
-Known limitation:
+W2 status (as of polish 5, 2026-05-02):
 
-- The bounded live graph smoke currently depends on Semantic Scholar API access.
-  Anonymous public quota can be throttled with HTTP 429 even after
-  retry/backoff. API-key verification is pending. Until
-  `SEMANTIC_SCHOLAR_API_KEY` is configured, full live graph and CLI demos may
-  fail at the Semantic Scholar lookup step.
+- Semantic Scholar is now an optional enhancement. Researcher-Deep falls back
+  to the arxiv API on transient S2 failures (HTTP 429/5xx/network) for
+  `arxiv:*` papers, so the bounded smoke and CLI demo no longer require an
+  SS key. The SS key remains supported via `SEMANTIC_SCHOLAR_API_KEY` env
+  var for higher-quality abstracts on s2-only papers and to lift the
+  anonymous-IP rate limit.
+- All known external blockers resolved as of polish 5. The bounded smoke
+  (`tests/e2e/test_bounded_smoke.py`) is now a stable auto gate that
+  exercises real Wide + Deep + stub Synth/Write end-to-end without
+  requiring an SS key.
 
 ## Repository Layout
 
@@ -178,14 +183,13 @@ uv run pytest tests/e2e/test_section_draft_live.py -m manual -v -s
 ```
 
 The manual full-graph test is opportunistic. It is useful for demos and
-diagnostics, but it is not treated as a stable default gate because it depends
-on external model behavior and Semantic Scholar rate limits.
+diagnostics, but it is not treated as a stable default gate because it
+depends on external model behavior across multiple sections.
 
 ## Roadmap
 
 Near-term work:
 
-- verify bounded live graph smoke after Semantic Scholar API key approval;
 - harden provider/API retry behavior and live-run diagnostics;
 - add richer synthesis beyond the current evidence dedupe stub;
 - replace the writer stub with long-form academic drafting;
