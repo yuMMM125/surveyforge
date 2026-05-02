@@ -56,6 +56,15 @@ MAX_TURNS_PER_SECTION = 8
 SUBMIT_TOOL_NAME = "submit_results"
 CONTEXT_OVERFLOW = "context_overflow"  # matches spec § 2.7.6 ErrorCategory string
 
+# Cap for forced-exit handoff: maximum number of `seen_paper_ids` per section
+# that get pushed onto `deep_read_queue` when Wide forced-exits without producing
+# `submit_results`. Without this cap, broad-topic forced-exits dump 20-40
+# candidates per section into deep_read_queue, which Deep then tries to s2_lookup
+# serially and gets rate-limited by Semantic Scholar. Bounding to 3 keeps Deep
+# within S2's effective throughput. Normal-completion (LLM-shortlisted) handoff
+# is UNCHANGED — only the forced-exit branch is capped.
+MAX_FORCED_EXIT_HANDOFF_PER_SECTION = 3
+
 
 class _SubmitArgs(BaseModel):
     """Permissive schema for the synthetic submit_results gateway entry.
@@ -396,6 +405,17 @@ def make_researcher_wide_node(
                 # not validated against CandidatePaper Pydantic — so empty title +
                 # forced-exit marker stay benign. Without this, Deep would skip these
                 # papers (orphan) and the `seen_paper_ids` preservation work is wasted.
+                #
+                # Without this cap, broad-topic forced-exits dump 20-40 candidates per
+                # section into deep_read_queue, which Deep then tries to s2_lookup
+                # serially and gets rate-limited by Semantic Scholar. Bounding to
+                # MAX_FORCED_EXIT_HANDOFF_PER_SECTION (=3) keeps Deep within S2's
+                # effective throughput. Sort first for determinism — set ordering
+                # is not stable across Python invocations.
+                # NOTE: stubs in section_notes still cover all seen paper_ids so Deep's
+                # section_notes cross-reference is unaffected; only the deep_read_queue
+                # itself is bounded. This way Wide's forced-exit signal is preserved in
+                # full for diagnostics, while Deep stays within rate-limit budget.
                 new_section_notes[section.section_id] = [
                     {
                         "paper_id": pid,
@@ -407,7 +427,8 @@ def make_researcher_wide_node(
                     }
                     for pid in seen_paper_ids
                 ]
-                for pid in seen_paper_ids:
+                capped_handoff = sorted(seen_paper_ids)[:MAX_FORCED_EXIT_HANDOFF_PER_SECTION]
+                for pid in capped_handoff:
                     if pid not in new_deep_queue:
                         new_deep_queue.append(pid)
 

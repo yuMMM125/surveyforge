@@ -215,9 +215,12 @@ def test_wide_node_8_turn_cap_preserves_seen_paper_ids(
     conn: psycopg.Connection, wide_node_factory: Any, patch_agent_transaction: Any,
 ) -> None:
     """LLM calls arxiv_search 8 times in a row without submit_results -> cap triggers.
-    Per DoD: ALL seen paper_ids from those 8 turns must end up in deep_read_queue,
-    AND error_category=context_overflow must be recorded (non-terminal — run continues)."""
+    Per DoD: stubs for ALL seen paper_ids must appear in section_notes (Deep's
+    cross-reference path), but deep_read_queue is bounded by
+    MAX_FORCED_EXIT_HANDOFF_PER_SECTION to keep Deep within S2 rate limits.
+    error_category=context_overflow must be recorded (non-terminal — run continues)."""
     patch_agent_transaction("surveyforge.agents.researcher_wide")
+    from surveyforge.agents.researcher_wide import MAX_FORCED_EXIT_HANDOFF_PER_SECTION
     scripted = [_ai_with_tool_call("arxiv_search", {"query": f"q{i}"}, tc_id=f"tc_{i}")
                 for i in range(8)]
     # Each of the 8 arxiv_search calls returns one unique paper
@@ -244,12 +247,12 @@ def test_wide_node_8_turn_cap_preserves_seen_paper_ids(
     # Forced-exit shape: section_notes contains stub entries (one per seen paper)
     # so Deep's cross-reference picks them up — NOT empty list. (Task 5 / Decision #5)
     stubs = result["section_notes"]["S1"]
-    assert len(stubs) == 8  # one stub per seen paper
+    assert len(stubs) == 8  # one stub per seen paper (full set preserved for diagnostics)
     assert all(s["_forced_exit_stub"] is True for s in stubs)
     assert {s["paper_id"] for s in stubs} == {f"arxiv:2401.0000{i}" for i in range(8)}
-    # All seen paper_ids land in deep_read_queue (the forced-exit hand-off contract)
-    for i in range(8):
-        assert f"arxiv:2401.0000{i}" in result["deep_read_queue"]
+    # deep_read_queue is CAPPED at MAX_FORCED_EXIT_HANDOFF_PER_SECTION (NOT all 8)
+    # to keep Deep within S2 rate limits (Task 7 polish, 2026-05-02).
+    assert len(result["deep_read_queue"]) == MAX_FORCED_EXIT_HANDOFF_PER_SECTION
     # error_category recorded, status unchanged
     rm = RunManager(conn)
     refreshed = rm.get(run_id)
@@ -673,6 +676,64 @@ def test_wide_node_submit_results_mismatch_continues_loop_then_caps(
     assert refreshed.error_category == "schema_invalid"
     from surveyforge.runtime.runs import RunStatus
     assert refreshed.status == RunStatus.RUNNING  # non-terminal
+
+
+def test_wide_forced_exit_handoff_caps_at_three_papers_per_section(
+    conn: psycopg.Connection, wide_node_factory: Any, patch_agent_transaction: Any,
+) -> None:
+    """Forced-exit (8-turn cap) with > 3 candidate paper_ids must NOT dump all of
+    them into deep_read_queue. Cap at MAX_FORCED_EXIT_HANDOFF_PER_SECTION (=3) to
+    keep Deep within Semantic Scholar's effective per-second throughput.
+
+    Without this cap, a broad-topic forced-exit (the empirical ~30 candidates per
+    section observed in the 2026-05-02 live run) makes Deep s2_lookup serially,
+    hits 429s, and abandons section_notes. Bounding to 3 papers per section
+    keeps the post-Wide queue tractable. Sorted for determinism — set ordering
+    is not stable across Python invocations."""
+    patch_agent_transaction("surveyforge.agents.researcher_wide")
+    from surveyforge.agents.researcher_wide import MAX_FORCED_EXIT_HANDOFF_PER_SECTION
+
+    # 8 arxiv_search calls, each returning a non-overlapping batch so total
+    # seen_paper_ids = 10 unique paper_ids (well above the cap of 3).
+    # 8th turn never produces submit_results → 8-turn cap triggers forced-exit.
+    paper_ids_returned = [f"arxiv:2401.{i:05d}" for i in range(10)]
+    scripted = [_ai_with_tool_call("arxiv_search", {"query": f"q{i}"}, tc_id=f"tc_{i}")
+                for i in range(8)]
+    node, gateway_calls = wide_node_factory(
+        scripted,
+        fake_tool_output={
+            "arxiv_search": {"papers": [
+                {"paper_id": pid, "arxiv_id": pid.split(":", 1)[1], "title": f"P{pid}",
+                 "authors": [], "abstract": "", "published": "2024-01-01T00:00:00Z",
+                 "categories": [], "pdf_url": None}
+                for pid in paper_ids_returned
+            ]},
+        },
+    )
+
+    run_id = _make_run(conn)
+    state = make_initial_state(topic="x")
+    state["outline"] = _outline_one_section()
+    config: RunnableConfig = {"configurable": {"thread_id": run_id}}
+
+    result = node(state, config)
+
+    # Sanity: all 8 turns dispatched, all 10 paper_ids seen in section_notes stubs
+    assert len(gateway_calls) == 8
+    stubs = result["section_notes"]["S1"]
+    assert len(stubs) == 10  # full diagnostic set preserved in section_notes
+    assert {s["paper_id"] for s in stubs} == set(paper_ids_returned)
+
+    # Cap enforced: deep_read_queue has EXACTLY 3 entries (NOT all 10)
+    assert len(result["deep_read_queue"]) == MAX_FORCED_EXIT_HANDOFF_PER_SECTION
+    assert MAX_FORCED_EXIT_HANDOFF_PER_SECTION == 3, (
+        "test scaffolding assumes cap=3; update assertions if cap changes"
+    )
+
+    # Determinism: the 3 entries are the first 3 of sorted(seen_paper_ids).
+    # Sort matters because set iteration order is not stable across runs.
+    expected = sorted(paper_ids_returned)[:MAX_FORCED_EXIT_HANDOFF_PER_SECTION]
+    assert result["deep_read_queue"] == expected
 
 
 def test_wide_node_json_fallback_mismatch_treated_as_schema_invalid(

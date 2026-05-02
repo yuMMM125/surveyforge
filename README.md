@@ -63,8 +63,24 @@ Deferred to W3-W5:
 - **Critic** + retry loop (W5): section-level + final-survey audit, including citation hallucination check
 - **DB `model_calls` logging** (W3+): per-call token / latency persistence; W2 uses Langfuse-only trace metrics
 
-End-to-end live integration test (8-20 min wall time):
+W2 acceptance structure (multi-tier):
 
-```bash
-uv run pytest tests/e2e -m integration -v
-```
+- **Node-level live tests** (auto, ~30-60s each):
+  ```bash
+  uv run pytest tests/agents/integration -m integration -v
+  ```
+
+- **Bounded graph smoke** (auto, ~60-180s, single section + real LLMs/APIs):
+  ```bash
+  uv run pytest tests/e2e -m integration -v
+  ```
+
+- **Manual full e2e** (opportunistic, ~8-25 min, multi-section + real LLMs/APIs; flakey on broad topics + S2 rate limits):
+  ```bash
+  uv run pytest tests/e2e/test_section_draft_live.py -m manual -v -s
+  ```
+
+- **Manual CLI demo** (the W2 deliverable):
+  ```bash
+  uv run surveyforge run --topic "Survey of RLHF progress"
+  ```
