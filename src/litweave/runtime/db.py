@@ -1,4 +1,4 @@
-"""PostgreSQL connection management for SurveyForge runtime.
+"""PostgreSQL connection management for LitWeave runtime.
 
 Per Architecture Decision (2026-05-01): PostgreSQL is the runtime backend; no
 SQLite fallback. Connection string from `LITWEAVE_DATABASE_URL` env var.

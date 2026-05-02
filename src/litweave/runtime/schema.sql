@@ -1,4 +1,4 @@
--- SurveyForge runtime schema (per spec § 2.7.2). PostgreSQL 16+.
+-- LitWeave runtime schema (per spec § 2.7.2). PostgreSQL 16+.
 -- Idempotent: safe to re-run on an existing DB; objects are CREATE IF NOT EXISTS.
 
 CREATE TABLE IF NOT EXISTS schema_version (

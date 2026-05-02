@@ -1,4 +1,4 @@
-"""W2 SurveyForge graph: linear pipeline wire-up.
+"""W2 LitWeave graph: linear pipeline wire-up.
 
 START -> planner -> researcher_wide -> researcher_deep -> synthesize -> write -> END
 

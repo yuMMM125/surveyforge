@@ -1,6 +1,6 @@
-# SurveyForge
+# LitWeave
 
-SurveyForge is a technical preview of a multi-agent academic survey generation
+LitWeave is a technical preview of a multi-agent academic survey generation
 system for AI/ML literature review workflows.
 
 It is inspired by the research direction behind systems such as STORM, but the
@@ -10,7 +10,7 @@ auditable execution traces.
 
 ## What It Does
 
-SurveyForge takes a survey topic and runs a LangGraph pipeline:
+LitWeave takes a survey topic and runs a LangGraph pipeline:
 
 ```text
 START -> planner -> researcher_wide -> researcher_deep -> synthesize -> write -> END
@@ -87,7 +87,7 @@ Live validation status:
 ```text
 config/
   llm_routing.yaml              # role -> provider/model routing
-src/surveyforge/
+src/litweave/
   agents/                       # Planner, Researcher-Wide, Researcher-Deep
   llm/                          # provider registry, router, rate limits
   prompts/                      # role prompts + shared rules
@@ -95,7 +95,7 @@ src/surveyforge/
   schemas/                      # structured outputs and citation IDs
   tools/                        # arXiv, Semantic Scholar, Serper wrappers
   graph.py                      # LangGraph construction
-  cli.py                        # surveyforge run/status
+  cli.py                        # litweave run/status
 tests/
   agents/
   e2e/
@@ -128,8 +128,8 @@ LANGFUSE_SECRET_KEY=
 LANGFUSE_HOST=https://cloud.langfuse.com
 ```
 
-`MODELS_BASE_URL` is optional. If omitted, SurveyForge uses the default
-OpenAI-compatible gateway configured in `src/surveyforge/llm/providers.py`.
+`MODELS_BASE_URL` is optional. If omitted, LitWeave uses the default
+OpenAI-compatible gateway configured in `src/litweave/llm/providers.py`.
 When switching providers, update both `MODELS_BASE_URL` and the model aliases in
 `config/llm_routing.yaml`.
 
@@ -147,7 +147,7 @@ For local CLI runs, make sure `LITWEAVE_DATABASE_URL` is set. You can put it
 in `.env` or export it in your shell:
 
 ```env
-LITWEAVE_DATABASE_URL=postgresql://surveyforge:surveyforge@localhost:5432/surveyforge
+LITWEAVE_DATABASE_URL=postgresql://litweave:litweave@localhost:5432/litweave
 ```
 
 ## Usage
@@ -155,13 +155,13 @@ LITWEAVE_DATABASE_URL=postgresql://surveyforge:surveyforge@localhost:5432/survey
 Run a topic:
 
 ```bash
-uv run surveyforge run --topic "long-context LLM benchmarks"
+uv run litweave run --topic "long-context LLM benchmarks"
 ```
 
 Check a run:
 
 ```bash
-uv run surveyforge status <run_id>
+uv run litweave status <run_id>
 ```
 
 On Windows PowerShell, use the same `uv run ...` commands after filling `.env`.

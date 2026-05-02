@@ -1,5 +1,5 @@
 # Role-to-model routing for the default OpenAI-compatible gateway.
-# Provider names must match surveyforge.llm.providers.ProviderName.
+# Provider names must match litweave.llm.providers.ProviderName.
 # Override MODELS_BASE_URL and MODELS_API_KEY to use another compatible
 # gateway, then update model aliases here if your provider uses different names.
 #
