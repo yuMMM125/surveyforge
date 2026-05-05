@@ -69,7 +69,12 @@ Asserts (in order, all must pass):
   (f) structured_extracts["S1"] carries the synthesizer's full output
       shape: comparison_matrix.rows non-empty, taxonomy.categories field
       present, cross_paper_synthesis field present (list, may be empty)
-  (g) wall time < 300s hard cap; warn at > 180s (soft)
+  (g) wall time < 900s hard cap; warn at > 600s (soft). The cap is loose
+      because the SJTU gateway shows 12x latency variance — even a trivial
+      'reply 2 chars' prompt has been observed at 124s for GLM and 36s for
+      MiniMax. With 3 Deep + 1 Synth real LLM calls, total 800s+ is within
+      gateway-noise range, not necessarily a regression. See
+      `_private/spikes/measure_llm_latency.py` for a per-provider probe.
 """
 from __future__ import annotations
 
@@ -458,15 +463,24 @@ def test_w2_bounded_smoke_single_section_e2e(
             "cross_paper_synthesis must be a list"
         )
 
-        # (g) wall_time hard cap: 5 min. If > 3 min, warn (not fail).
-        if wall_elapsed_s > 180:
+        # (g) wall_time hard cap: 15 min. If > 10 min, warn (not fail).
+        # Cap is loose because the SJTU gateway has been observed at >100s
+        # for trivial-prompt single calls; 4-5 real LLM calls per run means
+        # 800s+ total is within gateway-noise range. A truly-stuck pipeline
+        # (rate-limit storm, infinite retry loop) would still trip the 15-min
+        # cap. For a tighter regression detector, add per-stage timing
+        # diagnostic — pure model latency is what dominates here.
+        if wall_elapsed_s > 600:
             print(
-                f"[w2-bounded] WARNING: wall time {wall_elapsed_s:.0f}s > 180s — "
-                f"approaching the 5-min hard cap"
+                f"[w2-bounded] WARNING: wall time {wall_elapsed_s:.0f}s > 600s — "
+                f"approaching the 15-min hard cap"
             )
-        assert wall_elapsed_s < 300, (
-            f"wall time {wall_elapsed_s:.0f}s exceeded 5 min hard cap — "
-            f"something is wrong (rate limits / retry storm / model timeout)"
+        assert wall_elapsed_s < 900, (
+            f"wall time {wall_elapsed_s:.0f}s exceeded 15 min hard cap — "
+            f"something is structurally wrong (rate-limit storm, infinite "
+            f"retry loop, or stuck checkpoint write). Pure gateway slowness "
+            f"alone should not exceed 15 min for the bounded-smoke 4-5 LLM "
+            f"call budget."
         )
     finally:
         reset_pool()
