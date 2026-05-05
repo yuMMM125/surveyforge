@@ -184,11 +184,16 @@ def _validate_grounding(
     input_paper_ids: set[str],
     input_evidence_ids: set[str],
     evidence_id_to_paper_id: dict[str, str],
+    expected_section_id: str,
 ) -> None:
-    """Host-side grounding validation (AD #3). Four layers:
+    """Host-side grounding validation (AD #3). Six layers (0-5):
 
+      Layer 0 — section_id match: output.section_id MUST equal
+                expected_section_id (the section currently being processed).
+                Mismatch typically means the LLM lost track of which section
+                it was synthesizing for (multi-section context confusion).
       Layer 1 — paper_id subset: every paper_id referenced anywhere in output
-                MUST be in input_paper_ids.
+                MUST be in input_paper_ids. Includes claims[*].paper_id.
       Layer 2 — evidence_id subset: every evidence_id referenced anywhere
                 MUST be in input_evidence_ids.
       Layer 3 — evidence-paper consistency, both directions:
@@ -198,16 +203,45 @@ def _validate_grounding(
                 (3d) cross_paper_synthesis[i].paper_ids ⊆ {paper-of(eid) for eid in evidence_ids}
                      — every supporting paper must have ≥ 1 covering evidence_id; schema
                      `min_length=2` on evidence_ids is count-only, not coverage.
+                (3e) claims[i].evidence_id → item where paper_id == claims[i].paper_id
+                     — each backwards-compat claim must cite an evidence whose source
+                     paper matches the claim's declared paper_id.
                 (taxonomy.rationale_evidence_ids deliberately relaxed: rationale
                  evidence may legitimately come from any input paper.)
+      Layer 4 — taxonomy: any TaxonomyCategory with non-empty paper_ids MUST
+                have non-empty rationale_evidence_ids. Schema allows both fields
+                to default to empty list independently; this layer enforces the
+                "non-empty categories must be backed by rationale" contract.
+      Layer 5 — non-empty-input coverage: when the section has input evidence
+                (input_paper_ids non-empty), the output cannot be structurally
+                empty.
+                (5a) set(papers_cited) MUST equal input_paper_ids
+                (5b) set(paper_facts[*].paper_id) MUST equal input_paper_ids
+                     — one entry per cited paper, even if individual fields are
+                     empty strings for unknown method/dataset/metric/result
+                (5c) set(comparison_matrix.rows[*].paper_id) MUST equal input_paper_ids
+                     — one row per cited paper, even with empty cells dict if no
+                     dimension has supporting evidence
+                (Empty-section path returns _empty_output_for_section directly
+                without calling the LLM, so Layer 5 is never invoked there.)
 
     Raises `GroundingError` on first violation. Caller catches alongside
     `ValidationError` and feeds the error message back to the LLM in the
     schema-repair retry loop.
     """
-    # Layer 1: paper_id subset
+    # Layer 0: section_id match
+    if output.section_id != expected_section_id:
+        raise GroundingError(
+            f"output.section_id={output.section_id!r} does not match the "
+            f"section currently being processed ({expected_section_id!r}). "
+            f"Each Synthesizer call processes one section at a time; the "
+            f"output's section_id MUST echo the input section_id verbatim."
+        )
+
+    # Layer 1: paper_id subset (claims[*].paper_id included)
     output_paper_ids: set[str] = set()
     output_paper_ids.update(output.papers_cited)
+    output_paper_ids.update(c.paper_id for c in output.claims)
     output_paper_ids.update(pf.paper_id for pf in output.paper_facts)
     output_paper_ids.update(row.paper_id for row in output.comparison_matrix.rows)
     for cat in output.taxonomy.categories:
@@ -295,6 +329,56 @@ def _validate_grounding(
                 f"evidence_id. Each supporting paper MUST have ≥ 1 evidence_id "
                 f"in evidence_ids (schema's min_length=2 is count-only, not "
                 f"coverage)."
+            )
+
+    # Layer 3e: claims evidence-paper consistency
+    for claim in output.claims:
+        actual_paper = evidence_id_to_paper_id.get(claim.evidence_id)
+        if actual_paper != claim.paper_id:
+            raise GroundingError(
+                f"claims entry cites evidence_id {claim.evidence_id!r} as "
+                f"belonging to paper {claim.paper_id!r}, but that evidence "
+                f"actually came from paper {actual_paper!r}. Each claim's "
+                f"evidence_id MUST match its declared paper_id."
+            )
+
+    # Layer 4: taxonomy categories with paper_ids must have rationale_evidence_ids
+    for cat in output.taxonomy.categories:
+        if cat.paper_ids and not cat.rationale_evidence_ids:
+            raise GroundingError(
+                f"taxonomy category {cat.name!r} has paper_ids "
+                f"{sorted(cat.paper_ids)} but empty rationale_evidence_ids. "
+                f"Any non-empty TaxonomyCategory MUST have ≥ 1 rationale_evidence_id "
+                f"explaining WHY those papers cluster together."
+            )
+
+    # Layer 5: non-empty input → output cannot be structurally empty
+    if input_paper_ids:
+        output_papers_cited = set(output.papers_cited)
+        if output_papers_cited != input_paper_ids:
+            raise GroundingError(
+                f"papers_cited {sorted(output_papers_cited)} does not match "
+                f"input paper set {sorted(input_paper_ids)}. Hard rule 5: "
+                f"papers_cited MUST equal the dedup'd union of input "
+                f"evidence_items' paper_ids — do NOT add or drop papers."
+            )
+        pf_paper_ids = {pf.paper_id for pf in output.paper_facts}
+        missing_pf = input_paper_ids - pf_paper_ids
+        if missing_pf:
+            raise GroundingError(
+                f"paper_facts is missing entries for input paper_ids "
+                f"{sorted(missing_pf)}. There MUST be one paper_facts entry "
+                f"per cited paper (use empty string '' for unknown method / "
+                f"dataset / metric / result fields)."
+            )
+        matrix_paper_ids = {row.paper_id for row in output.comparison_matrix.rows}
+        missing_matrix = input_paper_ids - matrix_paper_ids
+        if missing_matrix:
+            raise GroundingError(
+                f"comparison_matrix is missing rows for input paper_ids "
+                f"{sorted(missing_matrix)}. There MUST be one MatrixRow per "
+                f"cited paper (use an empty `cells` dict if no dimension has "
+                f"supporting evidence for that paper)."
             )
 
 
@@ -451,6 +535,7 @@ def make_synthesizer_node(
                         input_paper_ids,
                         input_evidence_ids,
                         evidence_id_to_paper_id,
+                        section.section_id,
                     )
                     output = candidate
                     break  # both shape + grounding passed

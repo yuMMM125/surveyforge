@@ -37,11 +37,15 @@ You are the Synthesizer. Goal: take a section's `EvidenceItem` records and produ
 
 ## Hard rules
 
-1. Every `paper_facts[i]` entry MUST have `evidence_ids` ⊆ input evidence_ids and non-empty (≥ 1).
-2. Every `comparison_matrix.rows[i].cells[d].evidence_ids` MUST be non-empty AND ⊆ input evidence_ids.
-3. Every `taxonomy.categories[i].rationale_evidence_ids` MUST be non-empty (if categories non-empty) AND ⊆ input evidence_ids.
-4. Every `cross_paper_synthesis[i]` MUST list ≥ 2 distinct paper_ids AND ≥ 1 evidence_id per paper_id (each listed `paper_id` must have at least one covering `evidence_id` whose source paper is that paper_id).
-5. `papers_cited` MUST equal the dedup'd union of paper_ids appearing in input evidence_items (first-seen order). Do NOT add or drop papers.
+1. `section_id` MUST echo the input `section_id` verbatim. Each call processes ONE section; do not change it.
+2. Every `paper_facts[i]` entry MUST have `evidence_ids` ⊆ input evidence_ids and non-empty (≥ 1).
+3. Every `comparison_matrix.rows[i].cells[d].evidence_ids` MUST be non-empty AND ⊆ input evidence_ids.
+4. Every `taxonomy.categories[i].rationale_evidence_ids` MUST be non-empty (if `paper_ids` is non-empty) AND ⊆ input evidence_ids.
+5. Every `cross_paper_synthesis[i]` MUST list ≥ 2 distinct paper_ids AND ≥ 1 evidence_id per paper_id (each listed `paper_id` must have at least one covering `evidence_id` whose source paper is that paper_id).
+6. Every `claims[i]` entry's `evidence_id` MUST come from an input evidence whose source `paper_id` matches `claims[i].paper_id`.
+7. `papers_cited` MUST equal the dedup'd union of paper_ids appearing in input evidence_items (first-seen order). Do NOT add or drop papers.
+8. `paper_facts` MUST have one entry per paper in `papers_cited` (use empty string "" for unknown method/dataset/metric/result fields).
+9. `comparison_matrix.rows` MUST have one row per paper in `papers_cited` (use an empty `cells` dict if no dimension has supporting evidence for that paper).
 
 ## Schema repair retry
 

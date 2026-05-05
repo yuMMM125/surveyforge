@@ -20,7 +20,9 @@ from litweave.runtime.evidence import EvidenceItem, EvidenceStore
 from litweave.runtime.runs import RunManager
 from litweave.schemas.planner import PlannerSection
 from litweave.schemas.synthesis import (
+    ComparisonMatrix,
     MatrixCell,
+    MatrixRow,
     PaperFacts,
     SynthesizerOutput,
 )
@@ -209,7 +211,17 @@ def test_synthesizer_schema_repair_retry_succeeds_on_second_attempt(
     valid_second = SynthesizerOutput(
         section_id="S1",
         papers_cited=["arxiv:1"],
-        claims=[{"evidence_id": "E-test-1", "paper_id": "arxiv:1", "claim": "claim 1", "confidence": 0.9}],
+        claims=[{
+            "evidence_id": "E-test-1", "paper_id": "arxiv:1",
+            "claim": "claim 1", "confidence": 0.9,
+        }],
+        paper_facts=[PaperFacts(
+            paper_id="arxiv:1", method="", dataset="", metric="", result="",
+            evidence_ids=["E-test-1"],
+        )],
+        comparison_matrix=ComparisonMatrix(rows=[
+            MatrixRow(paper_id="arxiv:1", cells={}),
+        ]),
     ).model_dump()
 
     call_count = {"n": 0}
@@ -318,7 +330,21 @@ def test_synthesizer_passes_max_retries_zero_to_structured_call(
     ))
 
     captured_kwargs: list[dict] = []
-    valid_output = SynthesizerOutput(section_id="S1").model_dump()
+    valid_output = SynthesizerOutput(
+        section_id="S1",
+        papers_cited=["arxiv:1"],
+        claims=[{
+            "evidence_id": "E-mr0", "paper_id": "arxiv:1",
+            "claim": "c", "confidence": 0.9,
+        }],
+        paper_facts=[PaperFacts(
+            paper_id="arxiv:1", method="", dataset="", metric="", result="",
+            evidence_ids=["E-mr0"],
+        )],
+        comparison_matrix=ComparisonMatrix(rows=[
+            MatrixRow(paper_id="arxiv:1", cells={}),
+        ]),
+    ).model_dump()
 
     def capturing_structured_call(*args, **kwargs):
         captured_kwargs.append(dict(kwargs))
@@ -371,10 +397,21 @@ def test_synthesizer_grounding_failure_triggers_repair_retry(
         section_id="S1",
         papers_cited=["arxiv:fabricated"],  # not in input!
     ).model_dump()
-    # Second call: grounded correctly
+    # Second call: grounded correctly with full coverage (Layer 5 satisfied)
     grounded_second = SynthesizerOutput(
         section_id="S1",
         papers_cited=["arxiv:input"],
+        claims=[{
+            "evidence_id": "E-gr-1", "paper_id": "arxiv:input",
+            "claim": "c", "confidence": 0.9,
+        }],
+        paper_facts=[PaperFacts(
+            paper_id="arxiv:input", method="", dataset="", metric="", result="",
+            evidence_ids=["E-gr-1"],
+        )],
+        comparison_matrix=ComparisonMatrix(rows=[
+            MatrixRow(paper_id="arxiv:input", cells={}),
+        ]),
     ).model_dump()
 
     call_count = {"n": 0}
@@ -425,7 +462,7 @@ def test_synthesizer_grounding_validate_layer3_evidence_paper_consistency():
     evidence_map = {"E-1": "arxiv:p1", "E-2": "arxiv:p2"}
 
     with pytest.raises(GroundingError, match=r"paper_facts.*evidence_id"):
-        _validate_grounding(out, input_paper_ids, input_evidence_ids, evidence_map)
+        _validate_grounding(out, input_paper_ids, input_evidence_ids, evidence_map, "S1")
 
 
 def test_synthesizer_grounding_validate_layer3d_cross_paper_synthesis_paper_coverage():
@@ -458,7 +495,7 @@ def test_synthesizer_grounding_validate_layer3d_cross_paper_synthesis_paper_cove
     evidence_map = {"E-1": "arxiv:p1", "E-2": "arxiv:p2", "E-3": "arxiv:p1"}
 
     with pytest.raises(GroundingError, match="without any covering"):
-        _validate_grounding(out, input_paper_ids, input_evidence_ids, evidence_map)
+        _validate_grounding(out, input_paper_ids, input_evidence_ids, evidence_map, "S1")
 
 
 def test_synthesizer_budget_overflow_drives_top_k_rerank_and_records_gap(
@@ -535,11 +572,55 @@ def test_synthesizer_budget_overflow_drives_top_k_rerank_and_records_gap(
         ),
     )
 
-    valid_output = SynthesizerOutput(section_id="S1").model_dump()
+    # Predict which papers survive top_k packing — the same algorithm
+    # production will run inside the node, so the predicted surviving set
+    # equals the `input_paper_ids` production passes to `_validate_grounding`.
+    # This lets us mock `structured_call` to return a fully-grounded
+    # SynthesizerOutput covering exactly that set, exercising the REAL
+    # combined "budget truncation + receiver grounding" path.
+    predicted_selected, predicted_dropped = _top_k_rerank(
+        items_for_estimate, base_tokens, target_budget,
+    )
+    assert len(predicted_dropped) >= 1, (
+        "test setup invariant: target_budget = full - 1 should force top_k "
+        f"to drop >= 1 paper; got dropped={predicted_dropped}"
+    )
+
+    selected_by_paper: dict[str, list[EvidenceItem]] = {}
+    for it in predicted_selected:
+        selected_by_paper.setdefault(it.paper_id, []).append(it)
+    surviving_paper_ids = sorted(selected_by_paper.keys())
+
+    grounded_output = SynthesizerOutput(
+        section_id="S1",
+        papers_cited=surviving_paper_ids,
+        claims=[
+            {
+                "evidence_id": it.evidence_id, "paper_id": it.paper_id,
+                "claim": "c", "confidence": it.confidence,
+            }
+            for it in predicted_selected
+        ],
+        paper_facts=[
+            PaperFacts(
+                paper_id=pid, method="", dataset="", metric="", result="",
+                evidence_ids=[it.evidence_id for it in selected_by_paper[pid]],
+            )
+            for pid in surviving_paper_ids
+        ],
+        comparison_matrix=ComparisonMatrix(rows=[
+            MatrixRow(paper_id=pid, cells={}) for pid in surviving_paper_ids
+        ]),
+    ).model_dump()
+
     monkeypatch.setattr(
         "litweave.synthesis.synthesizer.structured_call",
-        lambda *a, **kw: valid_output,
+        lambda *a, **kw: grounded_output,
     )
+    # NOTE: `_validate_grounding` deliberately NOT monkeypatched — this test
+    # covers the REAL combined path of (a) budget overflow → top_k rerank →
+    # (b) host-side grounding against the truncated input set →
+    # (c) coverage_gaps augmentation with the budget_truncation entry.
 
     router = _make_mock_router()
     budget = BudgetManager()
@@ -551,8 +632,8 @@ def test_synthesizer_budget_overflow_drives_top_k_rerank_and_records_gap(
     result = node(state, config)
 
     extract = result["structured_extracts"]["S1"]
-    # (i) BudgetExceeded was caught (no propagation) — node returned cleanly
-    # (ii) At least one paper dropped (less than 5 in papers_cited)
+    # (i) BudgetExceeded was caught — node returned cleanly with an extract
+    # (ii) top_k dropped at least 1 paper
     assert len(extract["papers_cited"]) < 5, (
         f"top_k should have dropped >=1 paper; got {len(extract['papers_cited'])} "
         f"of 5 input papers"
@@ -564,3 +645,160 @@ def test_synthesizer_budget_overflow_drives_top_k_rerank_and_records_gap(
     assert len(truncation_gaps) >= 1, (
         f"expected budget_truncation gap; got {extract['coverage_gaps']}"
     )
+    # (iv) Grounding was actually invoked on the rerank-truncated input set:
+    # papers_cited equals the predicted surviving paper set. If Layer 5a
+    # (papers_cited == input_paper_ids) had been silently bypassed, this
+    # equality could have drifted undetected — e.g., output.papers_cited
+    # mismatching the post-rerank input.
+    assert set(extract["papers_cited"]) == set(surviving_paper_ids), (
+        f"papers_cited {sorted(extract['papers_cited'])} should equal the "
+        f"predicted top_k surviving set {surviving_paper_ids} — Layer 5a "
+        f"is supposed to enforce this on the real grounding path"
+    )
+
+
+def test_synthesizer_section_id_mismatch_triggers_repair_retry(
+    monkeypatch, conn, patch_agent_transaction
+):
+    """Layer 0: output.section_id MUST equal the section currently being
+    processed. First call returns wrong section_id (LLM lost track of which
+    section it's synthesizing); GroundingError fires; repair retry returns
+    the correct section_id and the call succeeds."""
+    patch_agent_transaction("litweave.synthesis.synthesizer")
+    rm = RunManager(conn)
+    run = rm.create(topic="t", idempotency_key="k_sid")
+    store = EvidenceStore(conn)
+    store.save(EvidenceItem(
+        evidence_id="E-sid-1", run_id=run.run_id, paper_id="arxiv:1",
+        section_id="S1", claim="c", source_span=None, source_locator=None,
+        confidence=0.9, created_by=AgentRole.RESEARCHER_DEEP,
+    ))
+
+    def _full_output(section_id: str) -> dict:
+        return SynthesizerOutput(
+            section_id=section_id,
+            papers_cited=["arxiv:1"],
+            claims=[{
+                "evidence_id": "E-sid-1", "paper_id": "arxiv:1",
+                "claim": "c", "confidence": 0.9,
+            }],
+            paper_facts=[PaperFacts(
+                paper_id="arxiv:1", method="", dataset="", metric="",
+                result="", evidence_ids=["E-sid-1"],
+            )],
+            comparison_matrix=ComparisonMatrix(rows=[
+                MatrixRow(paper_id="arxiv:1", cells={}),
+            ]),
+        ).model_dump()
+
+    wrong_then_right = [_full_output("S99"), _full_output("S1")]
+    call_count = {"n": 0}
+
+    def two_responses(*args, **kwargs):
+        i = call_count["n"]
+        call_count["n"] += 1
+        return wrong_then_right[i]
+
+    monkeypatch.setattr(
+        "litweave.synthesis.synthesizer.structured_call",
+        two_responses,
+    )
+
+    router = _make_mock_router()
+    registry = PromptRegistry()
+    budget = BudgetManager()
+    node = make_synthesizer_node(router, registry, budget)
+    section = PlannerSection(
+        section_id="S1", title="t",
+        research_questions=["q1", "q2"], must_find_evidence=["a"],
+    )
+    state = make_initial_state(topic="t")
+    state["outline"] = [section.model_dump()]
+    config: RunnableConfig = {"configurable": {"thread_id": run.run_id}}
+    result = node(state, config)
+
+    assert call_count["n"] == 2, "section_id mismatch should trigger 1 repair retry"
+    assert result["structured_extracts"]["S1"]["section_id"] == "S1"
+
+
+def test_synthesizer_grounding_validate_claims_paper_evidence_mismatch():
+    """Layer 3e: claims[i].evidence_id MUST come from an item whose paper_id
+    matches claims[i].paper_id. Mis-attributed claim raises GroundingError
+    even if the evidence_id and paper_id are individually in the input set."""
+    from litweave.synthesis.synthesizer import GroundingError, _validate_grounding
+
+    out = SynthesizerOutput(
+        section_id="S1",
+        papers_cited=["arxiv:p1", "arxiv:p2"],
+        claims=[{
+            "evidence_id": "E-2", "paper_id": "arxiv:p1",  # E-2 actually belongs to p2
+            "claim": "wrongly-attributed claim", "confidence": 0.9,
+        }],
+        paper_facts=[
+            PaperFacts(paper_id="arxiv:p1", method="", dataset="", metric="",
+                       result="", evidence_ids=["E-1"]),
+            PaperFacts(paper_id="arxiv:p2", method="", dataset="", metric="",
+                       result="", evidence_ids=["E-2"]),
+        ],
+        comparison_matrix=ComparisonMatrix(rows=[
+            MatrixRow(paper_id="arxiv:p1", cells={}),
+            MatrixRow(paper_id="arxiv:p2", cells={}),
+        ]),
+    )
+    input_paper_ids = {"arxiv:p1", "arxiv:p2"}
+    input_evidence_ids = {"E-1", "E-2"}
+    evidence_map = {"E-1": "arxiv:p1", "E-2": "arxiv:p2"}
+
+    with pytest.raises(GroundingError, match=r"claims.*evidence_id"):
+        _validate_grounding(out, input_paper_ids, input_evidence_ids, evidence_map, "S1")
+
+
+def test_synthesizer_non_empty_input_with_empty_output_raises_grounding_error():
+    """Layer 5: when the section has input evidence (input_paper_ids non-empty),
+    the model cannot return a structurally empty SynthesizerOutput. At minimum,
+    set(papers_cited) MUST equal input_paper_ids; missing paper_facts entries
+    or matrix.rows entries also raise."""
+    from litweave.synthesis.synthesizer import GroundingError, _validate_grounding
+
+    empty_out = SynthesizerOutput(section_id="S1")
+    input_paper_ids = {"arxiv:p1", "arxiv:p2"}
+    input_evidence_ids = {"E-1", "E-2"}
+    evidence_map = {"E-1": "arxiv:p1", "E-2": "arxiv:p2"}
+
+    with pytest.raises(GroundingError, match=r"papers_cited.*does not match"):
+        _validate_grounding(empty_out, input_paper_ids, input_evidence_ids, evidence_map, "S1")
+
+
+def test_synthesizer_taxonomy_paper_ids_without_rationale_raises_grounding_error():
+    """Layer 4: a TaxonomyCategory with non-empty paper_ids MUST have non-empty
+    rationale_evidence_ids. Schema allows both fields to default to empty list
+    independently; this layer enforces the "non-empty categories must be
+    rationalized" contract."""
+    from litweave.schemas.synthesis import SectionTaxonomy, TaxonomyCategory
+    from litweave.synthesis.synthesizer import GroundingError, _validate_grounding
+
+    out = SynthesizerOutput(
+        section_id="S1",
+        papers_cited=["arxiv:p1"],
+        paper_facts=[PaperFacts(
+            paper_id="arxiv:p1", method="", dataset="", metric="", result="",
+            evidence_ids=["E-1"],
+        )],
+        comparison_matrix=ComparisonMatrix(rows=[
+            MatrixRow(paper_id="arxiv:p1", cells={}),
+        ]),
+        taxonomy=SectionTaxonomy(categories=[
+            TaxonomyCategory(
+                name="some category",
+                description="a category that lists a paper without rationale",
+                paper_ids=["arxiv:p1"],
+                rationale_evidence_ids=[],  # EMPTY but paper_ids non-empty
+            ),
+        ]),
+    )
+    input_paper_ids = {"arxiv:p1"}
+    input_evidence_ids = {"E-1"}
+    evidence_map = {"E-1": "arxiv:p1"}
+
+    with pytest.raises(GroundingError, match=r"rationale_evidence_ids"):
+        _validate_grounding(out, input_paper_ids, input_evidence_ids, evidence_map, "S1")
