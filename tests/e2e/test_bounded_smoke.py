@@ -66,7 +66,10 @@ Asserts (in order, all must pass):
   (e) evidence_items table has >= 1 row (the strict assertion that
       motivated polish 9 — with deterministic relevant papers, MiniMax
       should reliably extract at least one EvidenceCard)
-  (f) wall time < 300s hard cap; warn at > 180s (soft)
+  (f) structured_extracts["S1"] carries the synthesizer's full output
+      shape: comparison_matrix.rows non-empty, taxonomy.categories field
+      present, cross_paper_synthesis field present (list, may be empty)
+  (g) wall time < 300s hard cap; warn at > 180s (soft)
 """
 from __future__ import annotations
 
@@ -414,7 +417,48 @@ def test_w2_bounded_smoke_single_section_e2e(
             f"deep_queue_len={len(deep_queue)}, tool_rows={tool_rows}"
         )
 
-        # (f) wall_time hard cap: 5 min. If > 3 min, warn (not fail).
+        # (f) structured_extracts has the synthesizer's full output shape.
+        # Real Synth replaces the stub: comparison_matrix, taxonomy, and
+        # cross_paper_synthesis must all be present as fields (their per-run
+        # contents may vary by model judgement, but the field must exist).
+        section_extract = result.get("structured_extracts", {}).get("S1", {})
+        print(
+            f"[w2-bounded] structured_extracts S1 keys={sorted(section_extract.keys())}"
+        )
+        print(
+            f"[w2-bounded]   comparison_matrix.rows count="
+            f"{len(section_extract.get('comparison_matrix', {}).get('rows', []))}"
+        )
+        print(
+            f"[w2-bounded]   taxonomy.categories count="
+            f"{len(section_extract.get('taxonomy', {}).get('categories', []))}"
+        )
+        print(
+            f"[w2-bounded]   cross_paper_synthesis count="
+            f"{len(section_extract.get('cross_paper_synthesis', []))}"
+        )
+        print(
+            f"[w2-bounded]   coverage_gaps count="
+            f"{len(section_extract.get('coverage_gaps', []))}"
+        )
+        assert "comparison_matrix" in section_extract, (
+            "comparison_matrix field missing from synthesizer extract"
+        )
+        assert section_extract["comparison_matrix"].get("rows", []), (
+            "comparison_matrix.rows must be non-empty after Synthesizer ran"
+        )
+        assert "taxonomy" in section_extract, "taxonomy field missing"
+        assert "categories" in section_extract.get("taxonomy", {}), (
+            "taxonomy.categories field missing"
+        )
+        assert "cross_paper_synthesis" in section_extract, (
+            "cross_paper_synthesis field missing"
+        )
+        assert isinstance(section_extract["cross_paper_synthesis"], list), (
+            "cross_paper_synthesis must be a list"
+        )
+
+        # (g) wall_time hard cap: 5 min. If > 3 min, warn (not fail).
         if wall_elapsed_s > 180:
             print(
                 f"[w2-bounded] WARNING: wall time {wall_elapsed_s:.0f}s > 180s — "

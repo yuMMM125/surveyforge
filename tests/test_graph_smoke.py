@@ -134,8 +134,8 @@ def _install_marker_nodes(
         lambda *a, **kw: _make_marker("researcher_deep", _deep_mut),
     )
     monkeypatch.setattr(
-        "litweave.graph.make_synthesize_stub_node",
-        lambda: _make_marker("synthesize", _synth_mut),
+        "litweave.graph.make_synthesizer_node",
+        lambda *a, **kw: _make_marker("synthesize", _synth_mut),
     )
     monkeypatch.setattr(
         "litweave.graph.make_write_stub_node",
@@ -151,6 +151,7 @@ def test_build_graph_returns_compiled_state_graph(monkeypatch):
         AgentRole.PLANNER: RoleBinding(provider=ProviderName.GLM, model="glm-5.1"),
         AgentRole.RESEARCHER_WIDE: RoleBinding(provider=ProviderName.DEEPSEEK, model="deepseek-chat"),
         AgentRole.RESEARCHER_DEEP: RoleBinding(provider=ProviderName.MINIMAX, model="minimax"),
+        AgentRole.SYNTHESIZER: RoleBinding(provider=ProviderName.GLM, model="glm-5.1"),
     })
     monkeypatch.setattr(router, "get_llm", MagicMock(return_value=MagicMock()))
     g = build_graph(
@@ -168,6 +169,7 @@ def test_build_graph_topology_has_5_nodes(monkeypatch):
         AgentRole.PLANNER: RoleBinding(provider=ProviderName.GLM, model="glm-5.1"),
         AgentRole.RESEARCHER_WIDE: RoleBinding(provider=ProviderName.DEEPSEEK, model="deepseek-chat"),
         AgentRole.RESEARCHER_DEEP: RoleBinding(provider=ProviderName.MINIMAX, model="minimax"),
+        AgentRole.SYNTHESIZER: RoleBinding(provider=ProviderName.GLM, model="glm-5.1"),
     })
     monkeypatch.setattr(router, "get_llm", MagicMock(return_value=MagicMock()))
     g = build_graph(
@@ -192,6 +194,7 @@ def test_build_graph_raises_when_database_url_missing(monkeypatch):
         AgentRole.PLANNER: RoleBinding(provider=ProviderName.GLM, model="glm-5.1"),
         AgentRole.RESEARCHER_WIDE: RoleBinding(provider=ProviderName.DEEPSEEK, model="deepseek-chat"),
         AgentRole.RESEARCHER_DEEP: RoleBinding(provider=ProviderName.MINIMAX, model="minimax"),
+        AgentRole.SYNTHESIZER: RoleBinding(provider=ProviderName.GLM, model="glm-5.1"),
     })
     monkeypatch.setattr(router, "get_llm", MagicMock(return_value=MagicMock()))
     with pytest.raises(RuntimeError, match="LITWEAVE_DATABASE_URL"):
@@ -276,6 +279,7 @@ def test_build_graph_default_postgres_checkpointer_round_trips_invoke(
         AgentRole.PLANNER: RoleBinding(provider=ProviderName.GLM, model="glm-5.1"),
         AgentRole.RESEARCHER_WIDE: RoleBinding(provider=ProviderName.DEEPSEEK, model="deepseek-chat"),
         AgentRole.RESEARCHER_DEEP: RoleBinding(provider=ProviderName.MINIMAX, model="minimax"),
+        AgentRole.SYNTHESIZER: RoleBinding(provider=ProviderName.GLM, model="glm-5.1"),
     })
     monkeypatch.setattr(router, "get_llm", MagicMock(return_value=MagicMock()))
 
@@ -352,6 +356,7 @@ def test_build_graph_invoke_runs_linear_flow_with_marker_nodes(monkeypatch):
         AgentRole.PLANNER: RoleBinding(provider=ProviderName.GLM, model="glm-5.1"),
         AgentRole.RESEARCHER_WIDE: RoleBinding(provider=ProviderName.DEEPSEEK, model="deepseek-chat"),
         AgentRole.RESEARCHER_DEEP: RoleBinding(provider=ProviderName.MINIMAX, model="minimax"),
+        AgentRole.SYNTHESIZER: RoleBinding(provider=ProviderName.GLM, model="glm-5.1"),
     })
     monkeypatch.setattr(router, "get_llm", MagicMock(return_value=MagicMock()))
 

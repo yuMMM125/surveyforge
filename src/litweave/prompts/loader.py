@@ -50,7 +50,11 @@ CITATION_EMITTING_ROLES: frozenset[AgentRole] = frozenset({
     # Researcher-Wide is **NOT** here — Wide is triage-only (CandidatePaper output,
     # no claim/evidence_id emission). Wide uses <<source_integrity_rules>> instead.
     AgentRole.RESEARCHER_DEEP,
-    # W3+ adds: SYNTHESIZER, WRITER, CRITIC_SECTION, CRITIC_FINAL, JUDGE_DEFAULT, JUDGE_FINAL
+    # Synthesizer also emits evidence_id-bearing structured output. Citation Rules
+    # is generation-time guidance; AD #3 host-side `_validate_grounding` is the
+    # post-generation hard contract — complementary, not redundant.
+    AgentRole.SYNTHESIZER,
+    # Future: WRITER, CRITIC_SECTION, CRITIC_FINAL, JUDGE_DEFAULT, JUDGE_FINAL
 })
 
 # Schema name → module path under litweave.schemas (allows registry to resolve
@@ -64,6 +68,7 @@ SCHEMA_MODULE: dict[str, str] = {
     "EvidenceCard": "litweave.schemas.research",
     "Citation": "litweave.schemas.citations",
     "EvidenceRef": "litweave.schemas.citations",
+    "SynthesizerOutput": "litweave.schemas.synthesis",
 }
 
 PLACEHOLDER_MARKERS = ("TODO", "FIXME", "<placeholder>")

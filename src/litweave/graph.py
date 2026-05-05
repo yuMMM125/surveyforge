@@ -45,7 +45,7 @@ from litweave.prompts.loader import PromptRegistry
 from litweave.runtime.budget import BudgetManager
 from litweave.runtime.db import ENV_DATABASE_URL
 from litweave.state import SurveyState
-from litweave.synthesis.stub import make_synthesize_stub_node
+from litweave.synthesis.synthesizer import make_synthesizer_node
 from litweave.writing.stub import make_write_stub_node
 
 # Dedicated autocommit pool for langgraph PostgresSaver — separate from
@@ -112,7 +112,10 @@ def build_graph(
         "researcher_deep",
         make_researcher_deep_node(router, registry, budget_manager),  # type: ignore[call-overload]
     )
-    g.add_node("synthesize", make_synthesize_stub_node())  # type: ignore[call-overload]
+    g.add_node(  # type: ignore[call-overload]
+        "synthesize",
+        make_synthesizer_node(router, registry, budget_manager),
+    )
     g.add_node("write", make_write_stub_node())  # type: ignore[call-overload]
 
     g.add_edge(START, "planner")

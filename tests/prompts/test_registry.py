@@ -15,7 +15,12 @@ from litweave.prompts.loader import (
 from litweave.schemas.planner import PlannerOutput
 from litweave.schemas.research import ResearcherDeepOutput, ResearcherWideOutput
 
-W2_ROLES = (AgentRole.PLANNER, AgentRole.RESEARCHER_WIDE, AgentRole.RESEARCHER_DEEP)
+W2_ROLES = (
+    AgentRole.PLANNER,
+    AgentRole.RESEARCHER_WIDE,
+    AgentRole.RESEARCHER_DEEP,
+    AgentRole.SYNTHESIZER,
+)
 
 
 @pytest.fixture
@@ -139,9 +144,10 @@ def test_researcher_wide_format_substitutes_section_context(registry: PromptRegi
 # ---- Error paths ----
 
 def test_unknown_role_raises(registry: PromptRegistry):
-    """SYNTHESIZER prompt isn't created in W2 — should raise."""
+    """Roles without prompt files yet should raise. WRITER is the next planned
+    prompt — until it lands, the 'no prompt file' path still has a victim."""
     with pytest.raises(PromptContractError, match="No prompt file"):
-        registry.load(AgentRole.SYNTHESIZER)
+        registry.load(AgentRole.WRITER)
 
 
 def test_malformed_front_matter_raises(tmp_path: Path):
